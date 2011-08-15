@@ -1,0 +1,927 @@
+#!/usr/bin/env perl
+
+use strict;
+use re 'eval';
+
+use Getopt::Long;
+use Pod::Usage;
+use File::Temp qw/tempfile/;
+use FileHandle;
+use Term::ANSIColor;
+
+use constant OUTPUT_FILE_TAG => "\x01";
+use constant INPUT_FILE_TAG => "\x02";
+use constant DOLLAR_TAG => "\x03";
+
+require 'TGEW.pm';
+
+my $param_logdir     = undef;
+my $param_masterlog  = undef;
+my $param_onfailcmd  = undef;
+my $param_makefile   = undef;
+my $param_dummy      = undef;
+my $flag_man         = 0;
+my $flag_help        = 0;
+my $flag_make        = 0;
+my $flag_showmakecmd = 0;
+my $flag_background  = 0;
+my $flag_tgelock     = 0;
+my $debug            = 0;
+my $debug_expr       = 0;
+my $debug_io         = 0;
+my $debug_qsub       = 0;
+
+GetOptions( 'help|?'   => \$flag_help,
+	    'man'      => \$flag_man,
+	    'make'     => \$flag_make,
+	    'tgelock'  => \$flag_tgelock,
+	    'j=i'      => \$param_dummy,
+	    'f=s'      => \$param_makefile,
+	    'n'        => \$flag_showmakecmd,
+	    'log=s'    => \$param_logdir,
+	    'mlog=s'   => \$param_masterlog,
+            'onfail=s' => \$param_onfailcmd,
+            'bg|background' => \$flag_background,
+	    'debug'    => \$debug,
+	    'exprdebug'=> \$debug_expr,
+	    'iodebug'  => \$debug_io,
+	    'qsubdebug'=> \$debug_qsub
+) or pod2usage(2);
+pod2usage(1) if $flag_help;
+pod2usage(-verbose => 2) if $flag_man;
+
+tge_setup_check();
+
+# option check
+{
+    my $make_option_used = $param_dummy ||
+	$param_makefile ne '' ||
+	$flag_showmakecmd ||
+	$flag_background;
+    if($make_option_used && !$flag_make) {
+	print STDERR "You specified GNU make option(s),\n";
+	print STDERR "though -make option is not specified.\n";
+	print STDERR "Try with -make option if you intended to do 'make'\n";
+	print STDERR "Otherwise please see the man page.\n";
+	exit 1;
+    }
+    if($param_onfailcmd && $flag_make) {
+	print STDERR "-onfail option and -make option are\n";
+	print STDERR "not allowed to be given at once due to\n";
+	print STDERR "a bad implementation. Modify the source code\n";
+	print STDERR "if you want the functionality.\n";
+	exit 1;
+    }
+}
+
+# logdir setup
+unless(defined $param_logdir) {
+    $param_logdir = TGEW::log_dir();
+} else {
+    $param_logdir = expand_path_to_full($param_logdir);
+}
+unless(defined $param_masterlog) {
+    $param_masterlog = TGEW::masterlog_path();
+} else {
+    $param_masterlog = expand_path_to_full($param_masterlog);
+}
+
+unless($flag_make) {
+    # make command line
+    my $cmd = join(' ', @ARGV);
+    if($cmd =~ /^\s*$/) {
+	pod2usage(2);
+	exit 0;
+    }
+
+    submit_commandline($cmd, get_maincommandname($cmd) . "_" . generate_datestring(), $param_onfailcmd, "" );
+} else {
+    # let's make
+    my $makepath = get_gmake_path();
+    my $basic_cmdline = "$makepath";
+    $basic_cmdline .= " -f $param_makefile" if(defined $param_makefile);
+
+    # make -pq and import variables and rules
+    my %variables;
+    my %rules;
+    {
+	my $cmdline = "$basic_cmdline -pq";
+	print STDERR "\% $cmdline\n" if($debug);
+	my @makeresults = map { chomp; $_ } `$cmdline`;
+	my $cursor = 0;
+	while($cursor < @makeresults) {
+	    $_ = $makeresults[$cursor++];
+	    next if(/^\s*#/ || /^\s*$/);
+	    if(/^(\S+)\s*(:?)\=\s*(.*)$/) {
+		my $varname     = $1;
+		my $isDefassign = $2 eq ':';
+		my $value       = $3;
+		if($isDefassign) {
+		    print "DEFVAR '$varname' = '$value'\n" if($debug);
+		    $variables{$varname} = $value unless(defined $variables{$varname});
+		} else {
+		    print "VAR '$varname' = '$value'\n" if($debug);
+		    $variables{$varname} = $value;
+		}
+		next;
+	    }
+	    if(/^([^\:]*[^\:\s]+)\s*:\s*(.*)$/) {
+		my $target = $1;
+		my $dependencystr = $2;
+		$dependencystr =~ s/\s+$//;
+		my @dependencies = split(/\s+/, $dependencystr);
+		print "TARGET '$target' DEPENDS ON '", join("','", @dependencies), "'\n" if($debug);
+		my $node = {};
+		$node->{dependencies} = \@dependencies;
+		while($cursor < @makeresults) {
+		    $_ = $makeresults[$cursor++];
+		    last if(/^\s*$/);
+		    next if(/^#/);
+		    unless(/^\t(.*)$/) {
+			unless($_ eq "endef") {
+			    print STDERR "Given makefile seems bad at $cursor line\n[$_]\n";
+			    print join("\n", @makeresults);
+			    exit 1;
+			}
+		    }
+		    my $command = $1;
+		    push(@{$node->{commands}}, $command);
+		    print STDERR "\t$command\n" if($debug);
+		}
+		for(split(/\s+/, $target)) {
+		    next if(/^\s*$/);
+		    $rules{$_} = $node;
+		}
+	    }
+	    # print "$_\n";
+	}
+    }
+
+    # tge specific variables
+    {
+	if(exists $variables{'I'}) {
+	    print STDERR "WARNING: Variable \$I is a special variable in tge_sub, whereas not in GNU make.\n";
+	    print STDERR "         The make process may not be reliable if you use this variable.\n";
+	}
+	$variables{'I'} = INPUT_FILE_TAG;
+	if(exists $variables{'O'}) {
+	    print STDERR "WARNING: Variable \$I is a special variable in tge_sub, whereas not in GNU make.\n";
+	    print STDERR "         The make process may not be reliable if you use this variable.\n";
+	}
+	$variables{'O'} = OUTPUT_FILE_TAG;
+	$variables{'$'} = DOLLAR_TAG;
+    }
+
+    # get the top level target
+    my $topleveltarget = shift;
+    {
+	if($topleveltarget eq '') {
+	    my $makefilename = $param_makefile;
+	    unless(defined $makefilename) {
+		$makefilename = 'makefile' if(-e 'makefile');
+		$makefilename = 'Makefile' if(-e 'Makefile');
+	    }
+	    unless(defined $makefilename) {
+		print STDERR "Could not find any makefile\n";
+		exit 1;
+	    }
+	    open FH, "< $makefilename" or die "Cannot open $makefilename";
+	    while(<FH>) {
+		chomp;
+		next if(/^\s*#/ || /^\s*$/);
+		next if(/^(\S+)\s*(:?)\=\s*(.*)$/);
+		if(/^([^\:]*[^\:\s]+)\s*:\s*(.*)$/) {
+		    $topleveltarget = $1;
+		    $topleveltarget =~ s/^\s+//;
+		    $topleveltarget =~ s/\s.*$//;
+		    last;
+		}
+	    }
+	    close FH;
+	    die "Could not find a top level target" unless(defined $topleveltarget);
+	}
+	print STDERR "TOPLEVELTARGET = '$topleveltarget'\n" if($debug);
+    }
+
+    # flags dirty dependency (rules to be executed)
+    {
+    	my @dirties;
+    	my %target2parents;
+    	while(my ($target, $node) = each %rules) {
+	    my @dependencies = @{$node->{dependencies}};
+	    $node->{dirty} = 0;
+            for my $child (@dependencies) {
+                push(@{$target2parents{$child}}, $target);
+            }
+	    if(@dependencies == 0) {
+		unless(-e $target) {
+		    $node->{dirty} = 1;
+		}
+	    } else {
+		my $toBeUpdated = 0;
+		unless(-e $target) {
+		    $toBeUpdated = 1;
+		} else {
+		    my $targetmtime = getmtime($target);
+		    for my $child (@dependencies) {
+			if(!-e $child) {
+			    print "   NO $child" if($debug);
+			    next;
+			}
+			my $childmtime = getmtime($child);
+			if($targetmtime < $childmtime) {
+			    print "   NEED MOD. $child" if($debug);
+			    $toBeUpdated = 1;
+			    last;
+			}
+		    }
+		}
+		$node->{dirty} = 1 if($toBeUpdated);
+	    }
+	    if($node->{dirty}) {
+		push(@dirties, $target);
+		print "FLAGGED $target AS DIRTY\n" if($debug);
+	    }
+    	}
+    	while(my $t = pop(@dirties)) {
+	    for(@{$target2parents{$t}}) {
+		my $node = $rules{$_};
+		next if($node->{dirty});
+		$node->{dirty} = 1;
+		print "FLAGGED $_ AS DEP-DIRTY\n" if($debug);
+		push(@dirties, $_);
+	    }
+    	}
+    }
+
+    # analyze dependencies and output essential dependency graph
+    # class Job {
+    #     name         -> jobname:string
+    #     dependencies -> vector<targetname:string>
+    #     commands     -> vector<commandline:string>
+    # };
+    my %jobs; # map<targetname:string, Job>
+    {
+	my $jobprefix = "make_" . generate_datestring() . "_";
+	my @queue = ();
+	my %processed;
+	push(@queue, $topleveltarget);
+	while(my $currenttarget = pop(@queue)) {
+	    next if($processed{$currenttarget});
+	    $processed{$currenttarget}++;
+	    print STDERR "PROCESS $currenttarget\n" if($debug);
+	    my $rule = $rules{$currenttarget};
+	    unless($rule->{dirty}) {
+		print STDERR "$currenttarget is not dirty" if($debug);
+		next;
+	    }
+	    unless(defined $rule) {
+		unless(-e $currenttarget) {
+		    print STDERR "No rule to make $currenttarget\n";
+		    exit 2;
+		}
+		next;
+	    }
+	    my $jobname = $jobprefix . jobescape($currenttarget);
+	    print STDERR "   MAKE JOB $jobname\n" if($debug);
+	    my @dependencies = grep { if(exists $rules{$_}) { $rules{$_}->{dirty} } else { 0 } } @{$rule->{dependencies}};
+	    print STDERR "   THAT DEPENDS ON ", join(',', @dependencies), "\n"  if($debug);
+	    for(reverse @dependencies) {
+		next if($processed{$_});
+		push(@queue, $_);
+	    }
+	    print STDERR "   COMMANDS ARE\n" if($debug);
+	    my %autovars;
+	    $autovars{'@'} = $currenttarget;
+	    $autovars{'%'} = '';
+	    $autovars{'<'} = ${$rule->{dependencies}}[0];
+	    $autovars{'?'} = join(' ', @dependencies);
+	    $autovars{'^'} = join(' ', @{$rule->{dependencies}});
+	    $autovars{'+'} = $autovars{'^'};
+	    $autovars{'*'} = '';
+	    my @exe_commands;
+	    for(@{$rule->{commands}}) {
+		my $exe_command = substitute_variables($_, \%variables, \%autovars);
+		print STDERR "      $exe_command\n" if($debug);
+		push(@exe_commands, $exe_command);
+	    }
+	    print STDERR "\n" if($debug);
+	    # create Job
+	    $jobs{$currenttarget}->{name}         = $jobname;
+	    $jobs{$currenttarget}->{dependencies} = \@dependencies;
+	    $jobs{$currenttarget}->{commands}     = \@exe_commands;
+	}
+    }
+
+    # Make a failure script
+    my $failurescriptfilename = "";
+    {
+	my $scriptfilenametemplate = TGEW::tempscript_dir() . '/scriptXXXXX';
+	(undef, $failurescriptfilename) = tempfile($scriptfilenametemplate, OPEN => 0);
+	my $lfh = new FileHandle "> $failurescriptfilename";
+	unless(defined $lfh) {
+	    print STDERR "Failed to open $failurescriptfilename\n";
+	    print STDERR "Aborted.\n";
+	    exit 2;
+	}
+	print $lfh "#!/bin/bash\n";
+	print $lfh "touch \$HOME/come\n";
+	my @jobnames_to_cancel = map { $_->{name} } (values %jobs);
+	for my $jobname (@jobnames_to_cancel) {
+	    print $lfh "if [ \"\$JOB_NAME\" != \"$jobname\" ]; then\n";
+	    print $lfh "\tqdel $jobname\n";
+	    print $lfh "\tatomicappend $param_masterlog CANCEL\\ : `LANG=C date` on \$HOST\\ \[\$1\]: $jobname\n";
+	    print $lfh "fi\n";
+	}
+	$lfh->close;
+	unless(chmod 0755, $failurescriptfilename) {
+	    print STDERR "Failed to chmod $failurescriptfilename\nAbort\n";
+	    exit 2;
+	}
+	print STDERR "Failure script path : $failurescriptfilename\n\n" if($debug);
+    }
+
+    # Submit necessary jobs to Sun Grid Engine.
+    {
+	# Need to consider the dependencies. i.e. topological sort & submit from children
+	my %processed;
+	my %target2Trigger;
+	my @queue = ($topleveltarget);
+	while(my $target = pop(@queue)) {
+	    next if($processed{$target});
+	    my $job = $jobs{$target};
+	    my @dependencies = @{$job->{dependencies}};
+            my @jobsToWait = ();
+            for(@dependencies) {
+                unless($processed{$_}) {
+		    push(@jobsToWait, $_);
+		    push(@{$target2Trigger{$_}}, $target);
+		    print STDERR "SET TRIGER FOR $_ TO $target\n" if($debug);
+                }
+            }
+	    unless(@jobsToWait) {
+		print STDERR "TARGET ", $job->{name}, "\n" if($debug);
+		print STDERR "  COMMANDS\n" if($debug);
+		for(@{$job->{commands}}) {
+		    print STDERR "    $_\n" if($debug);
+		}
+		print STDERR "\n" if($debug);
+		$processed{$target}++;
+		push(@queue, @{$target2Trigger{$target}}) if(exists $target2Trigger{$target});
+		# let's submit command
+		my $additional_option = '';
+		if(@dependencies) {
+		    $additional_option .= ' -hold_jid ';
+		    $additional_option .= join(',', (map { $jobs{$_}->{name} } @dependencies) );
+		}
+		if($target eq $topleveltarget) {
+		    unless($flag_background) {
+			$additional_option .= ' -sync y';
+		    }
+		}
+		my $make_onfailcmd = "$failurescriptfilename $job->{name}";
+		unless($flag_showmakecmd) {
+		    submit_commandline($job->{commands}, $job->{name}, $make_onfailcmd, $additional_option );
+		} else {
+		    for(@{$job->{commands}}) {
+			my $visi_cmd = visualizeTags($_);
+			print "$visi_cmd\n";
+		    }
+		}
+	    } else {
+		for(reverse @dependencies) {
+		    unless($processed{$_}) {
+			push(@queue, $_);
+		    }
+		}
+	    }
+	}
+    }
+    print STDERR "Done..\n" if($debug);
+    exit 0;
+}
+
+sub show_kvs($)
+{
+    my $hash = shift;
+    while(my ($k, $v) = each %{$hash}) {
+	print STDERR "$k = $v\n";
+    }
+}
+
+sub gnu_make_function_error($$$) {
+    my $error_mes = shift;
+    my $func_name = shift;
+    my $arguments = shift;
+    print STDERR "ERROR: $error_mes\n";
+    print STDERR "Your call was :\n";
+    print STDERR "\$($func_name $arguments)\n";
+    exit 3;
+			    }
+
+sub gnu_make_function($$) {
+    my $func_name = shift;
+    my $argument  = shift;
+    if($func_name eq 'basename') {
+	$argument =~ s/^\s+//;
+	$argument =~ s/\s+$//;
+	my @paths = map { s/\.[^\.]*$//; $_ } split(/\s+/, $argument);
+	return join(' ', @paths);
+    }
+    if($func_name eq 'addsuffix') {
+	$argument =~ s/^\s+//;
+	$argument =~ s/\s+$//;
+	unless($argument =~ m|^([^\,]*)\,(.*)$|) {
+	    gnu_make_function_error("addsuffix must have two arguments", $func_name, $argument);
+	}
+	my $suffix = $1;
+	my $pathstring = $2;
+	my @paths = map { $_ . $suffix } split(/\s+/, $pathstring);
+	return join(' ', @paths);
+    }
+    if($func_name eq 'addprefix') {
+	$argument =~ s/^\s+//;
+	$argument =~ s/\s+$//;
+	unless($argument =~ m|^([^\,]*)\,(.*)$|) {
+	    gnu_make_function_error("addprefix must have two arguments", $func_name, $argument);
+	}
+	my $prefix = $1;
+	my $pathstring = $2;
+	my @paths = map { $prefix . $_ } split(/\s+/, $pathstring);
+	return join(' ', @paths);
+    }
+    print STDERR "Function '$func_name is not implemented yet.\n";
+    exit 3;
+    # return $func_name . " " . $argument;
+}
+
+sub substitute_variables($$$) {
+    my $raw_command = shift;
+    print STDERR "    EVAL|$raw_command|\n" if($debug || $debug_expr);
+    my $vars  = shift;
+    my $avars = shift;
+    sub func_expr($$$) {
+    	my $expr = shift;
+	my $vars  = shift;
+	my $avars = shift;
+    	print STDERR "        FUNC-EXPR|$expr|\n" if($debug || $debug_expr);
+    	if($expr =~ /^(\((\S+)\)|(\S))$/) { # var
+	    my $varname = $2 . $3;
+	    my $var = undef;
+	    $var = ${$vars}{$varname}  if(exists ${$vars}{$varname});
+	    $var = ${$avars}{$varname} if(exists ${$avars}{$varname});
+	    print STDERR "            VARNAME:$varname\n" if($debug || $debug_expr);
+	    print STDERR "            R|$var|\n" if($debug || $debug_expr);
+	    return eval_expr($var, $vars, $avars);
+    	} else { # func
+	    $expr =~ s/^\((.*)\)$/$1/;
+	    if($expr =~ /^(\S+)\s+(.*)$/) {
+		my $function_name = $1;
+		my $argument      = $2;
+		print STDERR "        FUNC-CALL-BEFORE $function_name($argument)\n" if($debug || $debug_expr);
+		$argument = eval_expr($argument, $vars, $avars);
+		print STDERR "        FUNC-CALL-AFTER $function_name($argument)\n" if($debug || $debug_expr);
+		my $retval = gnu_make_function($function_name, $argument);
+		print STDERR "        FUNC-CALL-EVALED $retval \n" if($debug || $debug_expr);
+		return $retval;
+	    } else {
+		print STDERR "        ILLEGAL-F-EXPR\n" if($debug || $debug_expr);
+		return $expr;
+	    }
+    	}
+		  }
+		  sub eval_expr($$$) {
+		      my $expr = shift;
+		      my $vars  = shift;
+		      my $avars = shift;
+		      print STDERR "        EXPR|$expr|\n" if($debug || $debug_expr);
+		      my $max_iter = 50;
+		      while(--$max_iter) {
+			  last unless ($expr =~ s/\$(\([^()]+\)|[^()])/func_expr($1, $vars, $avars)/eg);
+		      }
+		      if($max_iter <= 0) {
+			  print STDERR "WARNING: exceeded max number of iterations.\n";
+			  unless($debug_expr) {
+			      print STDERR "         no other way.\n";
+			  }
+		      }
+		      return $expr;
+				}
+				return eval_expr($raw_command, $vars, $avars);
+		  }
+
+		  sub jobescape($) {
+		      my $str = shift;
+		      $str =~ s/\./_/g;
+		      $str =~ s|/|__|g;
+		      return $str;
+		  }
+
+		  sub getmtime($) {
+		      my $filename = shift;
+		      my (undef,undef,undef,undef,undef,undef,undef,undef,
+			  undef,$mtime,undef,undef,undef)
+			  = stat($filename);
+		      return $mtime;
+		  }
+
+		  sub shell_escape($)
+{
+    my $b = shift;
+    $b =~ s/([ \[\]\'\"\{\}><\|\$\@\&\=\~\\\`])/\\$1/g;
+    return $b;
+}
+
+sub get_maincommandname($)
+{
+    my $cmdline = shift;
+    # print STDERR "CMD=[$cmdline]\n";
+    unless($cmdline =~ /^\s*([A-Z_]+="[^"]*\"\s+)?([^=\s]+)\b(?!=)/x) {
+        # print STDERR "Undef\n";
+	return undef;
+    }
+    my $pathname = $2;
+    # print STDERR "PATH=[$pathname]\n";
+    $pathname =~ s|^\S*/||;
+    # print STDERR "OPATH=[$pathname]\n";
+    return $pathname;
+}
+
+sub generate_datestring()
+{
+    my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) = localtime(time);
+    return sprintf("%04d%02d%02d%02d%02d%02d", 1900 + $year, $mon + 1, $mday, $hour, $min, $sec);
+}
+
+sub recordIOTags($$$)
+{
+    my $commandLine = shift;
+    my $inputFiles = shift;
+    my $outputFiles = shift;
+
+    my $inputTagPattern = "\\" . INPUT_FILE_TAG . "(\\S+)";
+    while($commandLine =~ m|$inputTagPattern|g) {
+	my $fileName = $1;
+	${$inputFiles}{$fileName}++;
+	print STDERR "IODEBUG: IFILE='$fileName'\n" if($debug || $debug_io);
+    }
+    my $outputTagPattern = "\\" . OUTPUT_FILE_TAG . "(\\S+)";
+    while($commandLine =~ m|$outputTagPattern|g) {
+	my $fileName = $1;
+	${$outputFiles}{$fileName}++;
+	print STDERR "IODEBUG: OFILE='$fileName'\n" if($debug || $debug_io);
+    }
+
+}
+
+sub visualizeTags($)
+{
+    my $cmdline = shift;
+    my $itag = INPUT_FILE_TAG;
+    my $otag = OUTPUT_FILE_TAG;
+    my $ishowtag = color("green") . '\@(IN)'  . color("reset");
+    my $oshowtag = color("cyan") . '\@(OUT)' . color("reset");
+    $cmdline =~ s|$itag|$ishowtag|g;
+    $cmdline =~ s|$otag|$oshowtag|g;
+    my $dollartag = DOLLAR_TAG;
+    $cmdline =~ s|$dollartag|\$|g;
+    return $cmdline;
+}
+
+sub substituteTags($$)
+{
+    my $cmdline     = shift;
+    my $fname2index = shift;
+    my $retval      = '';
+    my $eliminateTagPattern = "[" . INPUT_FILE_TAG . OUTPUT_FILE_TAG . "]";
+    my $nonTagPattern       = "[^" . INPUT_FILE_TAG . OUTPUT_FILE_TAG . "]";
+    # print STDERR "PREV: $cmdline\n";
+    while(length($cmdline) > 0) {
+	if($cmdline =~ m|^$eliminateTagPattern(\S*)|) {
+	    my $fname = $1;
+	    $cmdline = substr($cmdline, length($fname) + 1);
+	    $retval .= '${LOCALFILES[' . ${$fname2index}{$fname} . ']}';
+	} else {
+	    $cmdline =~ m|^($nonTagPattern)|;
+	    my $nontagstr = $1;
+	    $cmdline = substr($cmdline, length($nontagstr));
+	    $retval .= $nontagstr;
+	}
+    }
+    my $dollartag = DOLLAR_TAG;
+    $retval =~ s|$dollartag|\$|g;
+    # print STDERR "AFTR: $retval\n";
+    return $retval;
+}
+
+sub submit_commandline($$$$)
+{
+    my $commandline = shift;
+    my $jobname     = shift;
+    my $onfailcmd   = shift;
+    my $additional_options_for_qsub = shift;
+    if($debug) {
+	if(ref($commandline) eq 'ARRAY') {
+	    for(@{$commandline}) {
+		print STDERR "CMDLINE: $commandline\n";
+	    }
+	} else {
+	    print STDERR "CMDLINE: $commandline\n";
+	}
+    }
+    # eliminate I/O tags
+    my (%inputFiles, %outputFiles);
+    {
+	if(ref($commandline) eq 'ARRAY') {
+	    for(@$commandline) {
+		recordIOTags($_, \%inputFiles, \%outputFiles) for(@{$commandline});
+	    }
+	} else {
+	    recordIOTags($commandline, \%inputFiles, \%outputFiles);
+	}
+    }
+    if($debug_io) {
+	if(ref($commandline) eq 'ARRAY') {
+	    for(@{$commandline}) {
+		print STDERR "AC-CMDLINE: $_\n";
+	    }
+	} else {
+	    print STDERR "AC-CMDLINE: $commandline\n";
+	}
+	print STDERR "INPUT FILES\n";
+	print STDERR "\t$_\n" for(keys %inputFiles);
+	print STDERR "OUTPUT FILES\n";
+	print STDERR "\t$_\n" for(keys %outputFiles);
+    }
+    my %fileNameToIndexNumber;
+    my $numberOfLocalFiles = 0;
+    {	# make filename->number index
+	for(keys %inputFiles)  { $fileNameToIndexNumber{$_} = $numberOfLocalFiles++; }
+	for(keys %outputFiles) { $fileNameToIndexNumber{$_} = $numberOfLocalFiles++; }
+    }
+    my $scriptfilenametemplate = TGEW::tempscript_dir() . '/scriptXXXXXX';
+    my (undef, $scriptfilename) = tempfile($scriptfilenametemplate, OPEN => 0);
+    my $lfh = new FileHandle "> $scriptfilename";
+    print STDERR "Creating script '$scriptfilename'\n" if($debug);
+    if(defined $lfh) {
+	print $lfh "#!/bin/bash\n";
+	print $lfh "#\$ -S /bin/bash\n";
+	print $lfh "#\$ -cwd\n";
+	print $lfh "#   pwd = " . `pwd`;
+	print $lfh "#\$ -v PATH\n";
+	print $lfh "#\$ -v LD_LIBRARY_PATH\n";
+	print $lfh "#\$ -v PERL5LIB\n";
+	print $lfh "#\$ -e $param_logdir\n";
+	print $lfh "#\$ -o $param_logdir\n";
+	print $lfh "#\$ -N $jobname\n";
+	my $hostname = `hostname`; chomp $hostname;
+	# BEGIN local specific codes
+	if(ref($commandline) eq 'ARRAY') {
+	    for(@{$commandline}) {
+		print STDERR "CHK SGE_RREQ: $_\n" if($debug);
+		if(/^\s*SGE_RREQ=\"([^\"]*)\"/) {
+		    my $req_option = $1;
+		    print STDERR "FOUND OPT: $req_option\n" if($debug);
+		    print $lfh "#\$ $req_option\n";
+		}
+	    }
+	} else {
+	    print STDERR "CHK SGE_RREQ: $commandline\n" if($debug);
+	    if($commandline =~ /^\s*SGE_RREQ=\"([^\"]*)\"/) {
+		my $req_option = $1;
+		print STDERR "FOUND OPT: $req_option\n" if($debug);
+		print $lfh "#\$ $req_option\n";
+	    }
+	}
+	# END
+	my $log_target;
+	{
+	    if(ref($commandline) eq 'ARRAY') {
+		$log_target = "make $jobname";
+	    } else {
+		my $escaped_commandline = shell_escape($commandline);
+		$log_target = $escaped_commandline;
+	    }
+	}
+	if($numberOfLocalFiles > 0){
+	    print $lfh "\nLOCALFILES=(`tge_temp $numberOfLocalFiles`)\n\n";
+	}
+	if(scalar(keys %inputFiles)) {
+	    print $lfh "\n";
+	    for my $filename (keys %inputFiles) {
+		my $fileString = '${LOCALFILES[' . $fileNameToIndexNumber{$filename} . ']}';
+		print $lfh "cp $filename $fileString\n";
+		print $lfh "if [ \$? != 0 ]; then\n";
+		print $lfh "    atomicappend $param_masterlog CPFAIL\\ : `LANG=C date` on \$HOST\\ \\[$scriptfilename\\]\\($?\\) : $log_target \\'$filename\\' -\\> \\'$fileString\\'\n";
+		if(defined $onfailcmd) {
+		    print $lfh "    ", $onfailcmd, "\n";
+		}
+		print $lfh "    exit 1\n";
+		print $lfh "fi\n";
+	    }
+	    print $lfh "\n";
+	}
+	print $lfh "atomicappend $param_masterlog START\\ \\ : `LANG=C date` on \$HOST\\ \\[$scriptfilename\\]\\ \\ \\ \\ : $log_target\n";
+	print $lfh "# BEGIN COMMANDS\n";
+	if(ref($commandline) eq 'ARRAY') {
+	    for(@{$commandline}) {
+		print STDERR "Substitute-tag for '$_'\n" if($debug);
+		my $cmd = substituteTags($_, \%fileNameToIndexNumber);
+		print $lfh "$cmd\n";
+	    }
+	} else {
+	    my $cmd = substituteTags($commandline, \%fileNameToIndexNumber);
+	    print $lfh "$cmd\n";
+	}
+	print $lfh "# END COMMANDS\n";
+	print $lfh "LASTCODE=\$?\n";
+	if(scalar(keys %inputFiles)) {
+	    for my $filename (keys %inputFiles) {
+		my $fileString = '${LOCALFILES[' . $fileNameToIndexNumber{$filename} . ']}';
+		print $lfh "    rm $fileString\n";
+	    }
+	}
+	if(scalar(keys %outputFiles) > 0) {
+	    for my $filename (keys %outputFiles) {
+		my $fileString = '${LOCALFILES[' . $fileNameToIndexNumber{$filename} . ']}';
+		print $lfh "tge_lock lock\n" if($flag_tgelock);
+		print $lfh "cp $fileString $filename\n";
+		print $lfh "CPLASTCODE=\$?\n";
+		print $lfh "tge_lock unlock\n" if($flag_tgelock);
+		print $lfh "if [ \$CPLASTCODE != 0 ]; then\n";
+		print $lfh "    atomicappend $param_masterlog CPFAIL\\ : `LANG=C date` on \$HOST\\ \\[$scriptfilename\\]\\($?\\) : $log_target \\'$fileString\\' -\\> \\'$filename\\'\n";
+		if(defined $onfailcmd) {
+		    print $lfh "    ", $onfailcmd, "\n";
+		}
+		print $lfh "    exit 1\n";
+		print $lfh "else\n";
+		print $lfh "    rm $fileString\n";
+		print $lfh "fi\n";
+	    }
+	    print $lfh "atomicappend $param_masterlog CPFIN\\ \\ : `LANG=C date` on \$HOST\\ \\[$scriptfilename\\]\\ \\ \\ \\  : $log_target\n\n";
+	}
+	print $lfh "if [ \$LASTCODE == 0 ]; then\n";
+	print $lfh "    atomicappend $param_masterlog FINISH\\ : `LANG=C date` on \$HOST\\ \\[$scriptfilename\\]\\(\$LASTCODE\\) : $log_target\n";
+	print $lfh "else\n";
+	print $lfh "    atomicappend $param_masterlog ERROR\\ \\ : `LANG=C date` on \$HOST\\ \\[$scriptfilename\\]\\(\$LASTCODE\\) : $log_target\n";
+	if(defined $onfailcmd) {
+	    print $lfh "    ", $onfailcmd, "\n";
+	}
+	print $lfh "fi\n";
+	system     "atomicappend $param_masterlog SUBMIT\\ : `LANG=C date` on \$HOST\\ \\[$scriptfilename\\] : $log_target";
+	$lfh->close();
+	unless(chmod 0755, $scriptfilename) {
+	    print STDERR "Failed to chmod $scriptfilename\n";
+	    print STDERR "Please check the permission carefully.\nAbort\n";
+	    exit 2;
+	}
+	my $qsub_commandline = "qsub $additional_options_for_qsub $scriptfilename";
+	if($debug_qsub) {
+	    print STDERR "\% $qsub_commandline\n";
+	}
+	system     $qsub_commandline;
+    } else {
+	return undef;
+    }
+}
+
+sub expand_path_to_full($) {
+    my $pathname = shift;
+    unless($pathname =~ m|^/|) {
+	my $cwd = `pwd`; chomp $cwd;
+	return $cwd . "/" . $pathname;
+    }
+    return $pathname;
+			}
+
+sub tge_setup_check() {
+    unless(TGEW::is_installed()) {
+	print STDERR "It seems 'Tiny Grid Engine Wrapper' is not properly set up yet.\n";
+	system "tge_install";
+    }
+}
+
+sub get_gmake_path()
+{
+    my $makepath = `which gmake`; chomp $makepath;
+    unless(-x $makepath) {
+	$makepath = `which make`; chomp $makepath;
+    }
+    unless(-x $makepath) {
+	print STDERR "Could not find GNU make\n";
+	print STDERR "Please make sure that GNU make is properly installed on your system.\n";
+	print STDERR "Also it is required that GNU make is on your PATH.\n";
+	exit 1;
+    }
+    print STDERR "GNU make path : $makepath\n" if($debug);
+    return $makepath;
+}
+
+=pod
+
+=head1 NAME
+
+tge_sub - Submits jobs
+
+=head1 SYNOPSIS
+
+tge_sub [options for tge_sub] -- <command line to execute on grid to be here>
+
+Options (for tge_sub) :
+   -help            brief help message
+   -man             full documentation
+   -f               specify the file name of Makefile
+   -n               prints the commands (when -f is set)
+   -j=i             specify the number of parallelism
+   -log=dir         specify the output directory of execution log
+   -mlog=path       specify the path of the message file
+   -onfail=command  specify the command to execute on failure of the job
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<-make>
+
+When -make is specified, B<tge_sub> will behave like GNU make.
+Note that this option does not work if GNU make is not properly installed.
+Other make is not likely to work with B<tge_sub> unless command line
+options are completely compatible with GNU's.
+
+=item<-bg -background>
+
+When -background option is specified, whole make process is performed
+on background. You can use short option -bg as well.
+This option is only available when -make option is set.
+
+=item B<-f>
+
+Specifies the file name of Makefile.
+This option is only available when -make option is set.
+The meaning of -f option is the same as GNU make -f option.
+
+=item B<-n>
+
+Just prints the commands to execute. The commands are not executed.
+This option is only available when -make option is set.
+The meaning of -n option is the same as GNU make -n option.
+
+=item B<-j>
+
+Specifies the concurrency of given jobs.
+This option is just for compatibility with GNU make.
+It does nothing when specified.
+
+=item B<-log>
+
+B<tge_sub> directs B<Sun Grid Engine> to output logs in specified directory.
+
+=item B<-mlog>
+
+When -mlog option is specified, SUBMIT/START/FINISH log is
+output to the specified file.
+
+=item B<-onfail>
+
+Even if you want to execute some command on failure of the job,
+Sun Grid Engine does not directly provide such capability.
+When -onfail option is specified, B<tge_sub> automatically generates
+shell scripts that perform the given command on failure and submit it
+to Sun Grid Engine.
+
+=item B<-tgelock>
+
+Uses tge_lockd. If you have configured tge_lockd, you can specify
+this option to speed up the process and
+to reduce the fragmentation of the NFS storage.
+This option allows only one client at once to write the result to
+the NFS storage.
+
+=item B<-help>
+
+Print a brief help message and exits.
+
+=item B<-man>
+
+Prints the manual page and exits.
+
+=back
+
+=head1 DESCRIPTION
+
+B<tge_sub> will execute the given command line via Sun Grid Engine.
+-- can be omitted if your command line does not include options.
+If the command line contains options, -- is necessary in order
+not to confuse tge_sub options with your command lines.
+
+B<tge_sub> can be used as a replacement of GNU make, if --make option
+is set. However, plaease use B<tge_make> instead. It provides with you
+an easier access to the make capability.
+'-make', '-bg', '-f', '-n', and '-j' options are related to the
+make capability.
+
+=head1 SEE ALSO
+
+B<tge_install>(1), B<tge_make>(1), B<tge_stat>(1), B<tge_del>(1)
+
+=cut

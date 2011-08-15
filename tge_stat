@@ -1,0 +1,321 @@
+#!/usr/bin/env perl
+
+use strict;
+
+use Getopt::Long;
+use Pod::Usage;
+use Term::ANSIColor;
+
+my $param_logdir     = undef;
+my $param_taillines  = 1000;
+my $param_showlimit  = 3;
+my $flag_help        = 0;
+my $flag_man         = 0;
+my $flag_showsummary = 0;
+my $flag_showdetail  = 0;
+my $flag_ttycolor    = 0;
+my $flag_showall     = 0;
+my $debug            = 0;
+
+GetOptions( 'help|?'    => \$flag_help,
+	    'man'       => \$flag_man,
+	    's|summary' => \$flag_showsummary,
+	    'd|detail'  => \$flag_showdetail,
+	    'log=s'     => \$param_logdir,
+	    'tail=i'    => \$param_taillines,
+	    'limit=i'   => \$param_showlimit,
+            'c|color'   => \$flag_ttycolor,
+            'a|all'     => \$flag_showall,
+	    'debug'     => \$debug
+) or pod2usage(2);
+pod2usage(1) if $flag_help;
+pod2usage(-verbose => 2) if $flag_man;
+
+my $isOutputTTY = -t STDOUT || $flag_ttycolor;
+my $qstatpath = `which qstat`; chomp $qstatpath;
+unless(-x $qstatpath) {
+    print STDERR "Could not locate the path of 'qstat'\n";
+    print STDERR "Please make sure that Sun Grid Engine is properly\n";
+    print STDERR "installed on your system. It requires qstat is on\n";
+    print STDERR "your PATH environment variable. If you do not understand\n";
+    print STDERR "this, please consult to your system administrator.\n";
+    exit 1;
+}
+
+sub expand_path_to_full($) {
+    my $pathname = shift;
+    unless($pathname =~ m|^/|) {
+        my $cwd = `pwd`; chomp $cwd;
+        return $cwd . "/" . $pathname;
+    }
+    return $pathname;
+			}
+
+if($flag_showsummary || $flag_showdetail) {
+    if($flag_showsummary) {
+	print_summary(1);
+    } else {
+	print_summary(0);
+    }
+} else {
+    my @qstatResult = `$qstatpath -xml -u \\\*`;
+    print_normal(\@qstatResult);
+}
+
+sub get_colorctlstr_of_stat($)
+{
+    my $stat = shift;
+    if($stat eq 'START') {
+	return color("yellow");
+    } elsif($stat eq 'FINISH') {
+	return color("blue");
+    } elsif($stat eq 'CPFAIL' || $stat eq 'FAILED' || $stat eq 'ERROR') {
+	return color("red");
+    } elsif($stat eq 'SUBMIT') {
+	return color("white");
+    } elsif($stat eq 'CANCEL') {
+	return color("red");
+    }
+    return "";
+}
+
+sub print_summary($)
+{
+    my $displayBriefly = shift;
+    # logdir setup
+    my $logdir;
+    my $mlogpath;
+    if(defined $param_logdir) {
+	$logdir   = expand_path_to_full($param_logdir);
+    } else {
+	$logdir   = 'log';
+    }
+    $mlogpath = "$logdir/message";
+    my @taillog = `tail -$param_taillines $mlogpath`;
+    my $stat = {};
+    for(reverse @taillog) {
+	chomp;
+	if(/^(\w+)\s*\:\s*(.*) on .*\:\s*(make)?\s*make_(\d+)_(.*)$/) {
+	    my $type       = $1;
+	    my $date       = $2;
+	    my $timetarget = $4;
+	    my $targetname = $5;
+	    next if(exists $stat->{$timetarget}->{$targetname});
+	    $stat->{$timetarget}->{$targetname}->{type} = $type;
+	    $stat->{$timetarget}->{$targetname}->{date} = $date;
+	} else {
+	    # print STDERR "$_\n";
+	}
+    }
+    my @statKeys = sort(keys %{$stat});
+    shift @statKeys while(@statKeys > $param_showlimit);
+    for my $targetName (@statKeys) {
+	my $timetarget = $stat->{$targetName};
+	my @tnames = sort(keys %{$timetarget});
+	if($displayBriefly) {
+	    if(exists $timetarget->{all}) {
+		my $num_waiting_jobs   = 0;
+		my $num_running_jobs   = 0;
+		my $num_failed_jobs    = 0;
+		my $num_cancelled_jobs = 0;
+		my $num_finished_jobs  = 0;
+		for(@tnames) {
+		    next if($_ eq 'all');
+		    my $status = $timetarget->{$_}->{type};
+		    if($status eq 'SUBMIT') {
+			$num_waiting_jobs++;
+		    } elsif($status eq 'START') {
+			$num_running_jobs++;
+		    } elsif($status eq 'CPFAIL' || $status eq 'FAILED' || $status eq 'ERROR') {
+			$num_failed_jobs++;
+		    } elsif($status eq 'CANCEL') {
+			$num_cancelled_jobs++;
+		    } elsif($status eq 'FINISH') {
+			$num_finished_jobs++;
+		    } else {
+			print STDERR "WARNING: do not understand job status '$status'\n";
+		    }
+		}
+		my $allstat = $timetarget->{all}->{type};
+		print get_colorctlstr_of_stat($allstat) if($isOutputTTY);
+		print "make_$targetName $allstat";
+		print " W$num_waiting_jobs"   if($num_waiting_jobs   > 0);
+		print " R$num_running_jobs"   if($num_running_jobs   > 0);
+		print " F$num_failed_jobs"    if($num_failed_jobs    > 0);
+		print " C$num_cancelled_jobs" if($num_cancelled_jobs > 0);
+		print " D$num_finished_jobs"  if($num_finished_jobs  > 0);
+		print color("reset") if($isOutputTTY);
+		print "\n";
+	    }
+	} else {
+	    print color("green") if($isOutputTTY);
+	    print "make_$targetName";
+	    if(exists $timetarget->{all}) {
+		print " all\t$timetarget->{all}->{type}";
+	    }
+	    print color("reset") if($isOutputTTY);
+	    print "\n";
+	    for(@tnames) {
+		next if($_ eq 'all');
+		my $status = $timetarget->{$_}->{type};
+		my $date   = $timetarget->{$_}->{date};
+		print get_colorctlstr_of_stat($status) if($isOutputTTY);
+		print "    ", $status, "\t$date\t$_";
+		print color("reset") if($isOutputTTY);
+		print "\n";
+	    }
+	    print "\n";
+	}
+    }
+}
+
+sub printHeader()
+{
+    print color("reset") if($isOutputTTY);
+    print " ID      Owner Queue               Time                Job name                    \n";
+    #print color("blue");
+    print "----------------------------------------------------------------------------------------------\n";
+    #print color("reset");
+}
+
+sub printJob($)
+{
+    my $job = shift;
+    $job->{time} =~ s/T/ /g;
+    my $myusername = $ENV{'USER'};
+    if($isOutputTTY) {
+	if($myusername eq $job->{owner}) {
+	    if($job->{status} =~ /r/) {
+		print color("yellow");
+	    } else {
+		print color("white");
+	    }
+	} else {
+            if($flag_showall) {
+		print color("blue");
+            } else {
+                return;
+            }
+	}
+    }
+    printf "%5s %8.8s %18.18s %20.20s %-36s\n",
+    $job->{id},	$job->{owner},
+    $job->{qname}, $job->{time},
+    $job->{name};
+    printf color("reset") if($isOutputTTY);
+}
+
+sub print_normal($)
+{
+    my $resultref = shift;
+    my $cjob = {}; # currentJob
+    printHeader();
+    for(@{$resultref}) {
+	chomp;
+	chop if(/\r$/);
+	s/^\s+//g;
+	s/\s+$//g;
+	if(m|^<job_list state="(.*)">|) {
+	    $cjob = {state => $1};
+	} elsif(m|^<JB_job_number>(\d+)</JB_job_number>$|) {
+	    $cjob->{id} = $1;
+	} elsif(m|^<JB_name>(.*)</JB_name>$|) {
+	    $cjob->{name} = $1;
+	} elsif(m|^<JB_owner>(.*)</JB_owner>$|) {
+	    $cjob->{owner} = $1;
+	} elsif(m|^<JAT_prio>([\d\.]+)</JAT_prio>$|) {
+	    # nothing for priority
+	} elsif(m|^<state>(\w*)</state>$|) {
+	    $cjob->{status} = $1;
+	} elsif(m|^<JB_submission_time>([\d\:\-\w]*)</JB_submission_time>$|) {
+	    $cjob->{time} = $1;
+	} elsif(m|^<JAT_start_time>([\d\:\-\w]*)</JAT_start_time>$|) {
+	    $cjob->{time} = $1;
+	} elsif(m|^<queue_name>(.*)</queue_name>$|) {
+	    $cjob->{qname} = $1;
+	} elsif(m|^<slots>(\d*)</slots>$|) {
+	    $cjob->{slots} = $1;
+	} elsif(m|^<\?xml version='1.0'\?>$|) {
+	    # do nothing for XML header
+	} elsif(m|^<job_info.*>$|) {
+	    # do nothing for the top level tag
+	} elsif(m|^<queue_info>$|) {
+	    # do nothing for queue tag
+	} elsif(m|^</job_list>$|) {
+	    printJob($cjob);
+	} elsif(m|^</.*>$|) {
+	    # ignores anything that closes
+	} else {
+	    print STDERR "WARNING: could not understand '$_'\n";
+	}
+    }
+}
+
+=pod
+
+=head1 NAME
+
+tge_stat - show a job status
+
+=head1 SYNOPSIS
+
+tge_stat [options...]
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<-s, -summary>
+
+Show the brief summary of tge_* status. When this option is specified,
+the message log is parsed and the current status of the running
+makes will be displayed.
+
+=item B<-d, -detail>
+
+Show the detailed summary of tge_* status. When this option is specified,
+the message log is parsed and the current status of the running
+jobs will be displayed.
+
+=item B<-log>
+
+B<tge_stat> will parse the logs in the specified directory.
+When not specified, the default directory './log' is used.
+This option makes no effect when -summary is not specified.
+
+=item B<-limit>
+
+This options limits the number of targets to show.
+Please also see B<-tail> option.
+
+=item B<-tail>
+
+B<tge_stat> will parse at most the given number of lines.
+It is to limit the processing time. For example, -tail=10000
+will limit the number of lines to be parsed in the log file
+to 10000.
+This option makes no effect when -summary is not specified.
+
+=item B<-help>
+
+Print a brief help message and exits.
+
+=item B<-man>
+
+Prints the manual page and exits.
+
+=back
+
+=head1 DESCRIPTION
+
+B<tge_stat> will display the job status of Sun Grid Engine.
+B<tge_stat> is a similar tool to B<qstat>, however, B<tge_stat> has
+a much better interface for jobs invoked by B<tge_sub> or B<tge_make>.
+
+
+=head1 SEE ALSO
+
+B<qstat>(1), B<tge_sub>(1), B<tge_make>(1), B<tge_install>(1), B<tge_del>(1)
+
+=cut
+

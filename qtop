@@ -1,0 +1,100 @@
+#!/usr/bin/env perl
+
+use strict;
+use Term::ReadKey;
+my $PAGE_SIZE = 30;
+
+my $username = $ENV{'USER'};
+my $hostname = $ENV{'HOST'};
+if($hostname eq '') {
+    $hostname = `hostname`; chomp $hostname;
+}
+
+system "stty", '-icanon', 'eol', "\001", "-echo";
+system "clear";
+
+my $flag_user           = 0;
+my $flag_job            = 0;
+my $flag_qstat          = 0;
+my $flag_showallcluster = 0;
+
+my $page = 0;
+
+while(1) {
+    {
+        my ($cols, $lines) = GetTerminalSize();
+        $PAGE_SIZE = $lines - 4;
+    }
+    my $commandline;
+    if($flag_qstat) {
+        $commandline = "qstat -f -explain E";
+    } else {
+        $commandline = "qhost";
+        $commandline .= " -j" if($flag_job);
+        if($flag_user) {
+            $commandline .= ' -u \*';
+        } else {
+            $commandline .= " -u $username";
+        }
+    }
+    my @output = `$commandline`;
+    my @header;
+    {
+        my $tmp;
+        my $status = "=== qtop version 1.00 === : [Q]uit, [N]ext, [P]revious, [J]ob, [U]ser    ";
+        $status .= $flag_user  ? "U" : " ";
+        $status .= $flag_job   ? "J" : " ";
+        $status .= $flag_qstat ? "S" : " ";
+	push(@header, $status . "\n");
+        $tmp = shift(@output); push(@header, $tmp);
+        $tmp = shift(@output); push(@header, $tmp);
+    }
+    print "\x1b[1;1H";
+    {
+        print @header;
+        my $base = $PAGE_SIZE * $page;
+        for(my $i = 0; $i < $PAGE_SIZE; $i++) {
+            print $output[$base + $i];
+        }
+    }
+    my $timeout = 3;
+    my $inch;
+    eval {
+        local $SIG{ALRM} = sub { die "alarm\n" }; # NB: \n required
+        alarm $timeout;
+        $inch = getc(STDIN);
+        alarm 0;
+    };
+    unless ($@) {
+        # print "INPUT '$inch'\n";
+        if($inch eq 'q') {
+            system "stty", 'icanon', 'eol', '^@', "echo"; # ASCII null
+            exit;
+        } elsif($inch eq 'u') {
+            $flag_user = $flag_user ^ 1;
+            system "clear";
+        } elsif($inch eq 'j') {
+            $flag_job  = $flag_job  ^ 1;
+            system "clear";
+        } elsif($inch eq 's') {
+            $flag_qstat= $flag_qstat ^ 1;
+            system "clear";
+        } elsif($inch eq 'a') {
+            $flag_showallcluster = $flag_showallcluster ^ 1;
+            system "clear";
+        } elsif($inch eq 'n' || $inch eq ' ' || $inch eq "\n") {
+            $page++;
+            $page = 0 if($PAGE_SIZE * $page >= @output);
+            system "clear";
+        } elsif($inch eq 'p') {
+            $page--;
+            $page = int(@output / $PAGE_SIZE) if($page < 0);
+            system "clear";
+        } elsif($inch eq 'G') {
+	    $page = int(@output / $PAGE_SIZE);
+	    system "clear";
+	}
+    }
+}
+
+

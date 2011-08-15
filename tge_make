@@ -1,0 +1,167 @@
+#!/usr/bin/env perl
+
+use strict;
+use re 'eval';
+
+use Getopt::Long;
+use Pod::Usage;
+use File::Temp qw/tempfile/;
+use FileHandle;
+use Term::ANSIColor;
+
+require 'TGEW.pm';
+
+my $param_logdir     = undef;
+my $param_makefile   = undef;
+my $param_dummy      = undef;
+my $flag_man         = 0;
+my $flag_help        = 0;
+my $flag_showmakecmd = 0;
+my $flag_background  = 0;
+my $debug            = 0;
+my $debug_expr       = 0;
+my $debug_io         = 0;
+my $debug_qsub       = 0;
+
+GetOptions( 'help|?'   => \$flag_help,
+	    'man'      => \$flag_man,
+	    'j=i'      => \$param_dummy,
+	    'f=s'      => \$param_makefile,
+	    'n'        => \$flag_showmakecmd,
+	    'log=s'    => \$param_logdir,
+            'bg|background' => \$flag_background,
+	    'debug'    => \$debug
+) or pod2usage(2);
+pod2usage(1) if $flag_help;
+pod2usage(-verbose => 2) if $flag_man;
+
+if(@ARGV >= 2) {
+    print STDERR "Sorry, tge_make does not accept multiple targets currently.\n";
+    print STDERR "Ask the author to implement the function.\n";
+    exit 1;
+}
+
+sub expand_path_to_full($) {
+    my $pathname = shift;
+    unless($pathname =~ m|^/|) {
+	my $cwd = `pwd`; chomp $cwd;
+	return $cwd . "/" . $pathname;
+    }
+    return $pathname;
+			}
+
+# logdir setup
+my $logdir   = undef;
+my $mlogpath = undef;
+if(defined $param_logdir) {
+    $logdir   = expand_path_to_full($param_logdir);
+} else {
+    $logdir   = 'log';
+}
+$mlogpath = "$logdir/message";
+unless(-e $logdir) {
+    system "mkdir -p $logdir";
+}
+unless(-e $mlogpath) {
+    system "touch $mlogpath";
+}
+
+# check path of tge_sub
+my $tge_subpath = `which tge_sub`; chomp $tge_subpath;
+unless(-x $tge_subpath) {
+    print STDERR "You need to install tge_sub on directoies in PATH env. variable.\n";
+    exit 1;
+}
+
+# options
+my $options = '';
+if(defined $param_makefile) {
+    $options .= " -f=$param_makefile";
+}
+if($flag_showmakecmd) {
+    $options .= " -n";
+}
+if($flag_background) {
+    $options .= " -background";
+}
+
+# log dir options
+$options .= " -log=$logdir -mlog=$mlogpath";
+
+# execute
+my $cmdline = "$tge_subpath --make$options -- " . join(' ', @ARGV);
+print STDERR (color("yellow") . "% $cmdline" . color("reset") . "\n");
+system $cmdline;
+exit $?;
+
+=pod
+
+=head1 NAME
+
+tge_make - Thin Grid Engine wrapper : make on the Sun Grid Engine
+
+=head1 SYNOPSIS
+
+tge_make [options...] [target]
+
+=head1 OPTIONS
+
+=over 8
+
+=item<-bg -background>
+
+When -background option is specified, whole make process is performed
+on background. You can use short option -bg as well.
+
+=item B<-f>
+
+Specifies the file name (path) of Makefile.
+The meaning of -f option is the same as GNU make -f option.
+
+=item B<-n>
+
+Just prints the commands to execute. The commands are not executed actually.
+The meaning of -n option is the same as GNU make -n option.
+
+=item B<-j>
+
+Just left for compatibility. Generally speaking, there is no
+limit to parallelism so that specifying -j option does not make
+any change to behavior here.
+
+=item B<-log>
+
+B<tge_make> will output logs to the given directory.
+For example, if you specified -log=log, then, log/XXXX.e(jobnum)
+log/XXXX.o(jobnum) are the standard error output and the standard
+output, while log/message is the master log.
+
+=item B<-help>
+
+Print a brief help message and exits.
+
+=item B<-man>
+
+Prints the manual page and exits.
+
+=back
+
+=head1 DESCRIPTION
+
+B<tge_make> can be used as a replacement of GNU make.
+It automatically invokes GNU make with '-pq' option to expand
+suffix rules and implicit rules to normal make file.
+B<tge_make> will than interpret them and reorganize the depencency.
+According to the obtained dependency, it determines which dependencies
+need to be updated. Necessary commands are passed to Sun Grid Engine
+with appropriate dependency graph.
+
+See GNU make manual for the meanings and the semantics of
+'-f', '-n', and '-j' options.
+
+=head1 SEE ALSO
+
+B<gmake>(1), B<tge_install>(1), B<tge_make>(1)
+
+=cut
+

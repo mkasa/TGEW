@@ -1,0 +1,92 @@
+#!/usr/bin/env perl
+
+use strict;
+require 'TGEW.pm';
+
+while(1){
+    print "Would you like to set up 'Tiny Grid Engine Wrapper'? ([Y]/n)\n";
+    my $ans = <>; chomp $ans;
+    last if($ans eq '' || $ans =~ /^y(es)?$/i);
+    exit 1 if($ans =~ /^no?$/);
+    print "Please answer yes or no.\n";
+}
+
+my $base_dir = TGEW::base_dir();
+print STDERR "Base directory : $base_dir\n";
+unless(-e $base_dir) {
+    print "Creating $base_dir\n";
+    mkdir $base_dir or die;
+}
+
+my $tempscript_dir = TGEW::tempscript_dir();
+unless(-e $tempscript_dir) {
+    print "Creating $tempscript_dir\n";
+    mkdir $tempscript_dir or die;
+}
+
+my $log_dir = TGEW::log_dir();
+unless(-e $log_dir) {
+    print "Creating $log_dir\n";
+    mkdir $log_dir or die;
+}
+
+my $db = TGEW::execdb_path();
+if(-e $db) {
+    unlink $db or die;
+}
+
+my $masterlog = TGEW::masterlog_path();
+unless(-e $masterlog) {
+    system "touch $masterlog";
+}
+
+my $rcfile = TGEW::rc_path();
+unless(-e $rcfile) {
+    open FH, "> $rcfile" or die;
+    print FH "localdisk=*:/grid2/\$USER\n";
+    print FH "tgelocaldisk=*:/grid2/\${USER}\n";
+    close FH;
+}
+
+my $fsrcfile = TGEW::fsrc_path();
+unless(-e $fsrcfile) {
+    open FH, "> $fsrcfile" or die;
+    print FH "#\n# TGE filesystem configuration file\n#\n";
+    print FH "# DO NOT EDIT FILE BEFORE READING DOCUMENTATION.\n#\n";
+    print FH "0\n|D$ENV{'HOME'}\n-L\n0\n|D/grid/$ENV{'USER'}\n-L\n";
+    print FH "#\n";
+    close FH;
+}
+
+print "\n\n";
+print "TGEW has been successfully set up.\n";
+
+=pod
+
+=head1 NAME
+
+tge_install - TGEW installer
+
+=head1 SYNOPSIS
+
+tge_install
+
+No options/arguments are available.
+
+=head1 DESCRIPTION
+
+B<tge_install> will set up a directory strucure and initialization files
+for Tiny Grid Engine Wrapper. You need to run this script before any use
+of B<tge> related scripts.
+
+Major directories/configuration files that B<tge_install> will create
+are following.
+
+	~/.tge		TGEW main directory
+	~/.tge/log	TGEW log directory
+	~/.tge/log/message	TGEW master log file
+	~/.tge/scripts	TGEW script directory
+	~/.tge/.tgerc	TGEW configuration file
+
+=cut
+

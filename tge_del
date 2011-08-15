@@ -1,0 +1,88 @@
+#!/usr/bin/env perl
+
+use strict;
+
+use Getopt::Long;
+use Pod::Usage;
+
+my $flag_help        = 0;
+my $flag_man         = 0;
+my $flag_ignorecase  = 0;
+my $debug            = 0;
+
+GetOptions( 'help|?'   => \$flag_help,
+	    'man'      => \$flag_man,
+	    'i'        => \$flag_ignorecase,
+	    'debug'    => \$debug
+) or pod2usage(2);
+pod2usage(1) if $flag_help;
+pod2usage(-verbose => 2) if $flag_man;
+
+my $regexp = shift;
+
+if($regexp eq '') {
+    print STDERR "usage: tge_del [options...] <regexp> \n";
+    exit 0;
+}
+
+my @jobs_to_delete;
+my @qstatresult = map { chomp; $_ } `qstat -xml`;
+for(@qstatresult) {
+    if(m|<JB_name>([^<]*)</JB_name>|) {
+	my $jobname = $1;
+	if($flag_ignorecase) {
+	    push(@jobs_to_delete, $jobname) if($jobname =~ m|$regexp|i);
+	} else {
+	    push(@jobs_to_delete, $jobname) if($jobname =~ m|$regexp|);
+	}
+    }
+}
+
+if(@jobs_to_delete) {
+    system("qdel " . join(' ', @jobs_to_delete));
+    exit $?;
+} else {
+    print STDERR "No jobs to delete\n";
+    exit 1;
+}
+
+=pod
+
+=head1 NAME
+
+tge_del - deletes specifies jobs
+
+=head1 SYNOPSIS
+
+tge_del <regular expression>
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<-i>
+
+Ignore cases. Abc will match to aBc, ABC, abc, and abC, etc., when specified.
+
+=item B<-help>
+
+Print a brief help message and exits.
+
+=item B<-man>
+
+Prints the manual page and exits.
+
+=back
+
+=head1 DESCRIPTION
+
+B<tge_del> will delete jobs from the default queue of Sun Grid Engine.
+Jobs can be specified using a regular expression. It will get all job
+information from B<qstat> command, and invokes B<qdel> to delete jobs
+that match to the given regular expression.
+
+=head1 SEE ALSO
+
+B<qstat>(1), B<qdel>(1)
+
+=cut

@@ -1,0 +1,94 @@
+#!/usr/bin/env perl
+
+use strict;
+
+use File::Temp qw/tempfile/;
+use TGEW;
+
+my $number = shift;
+if($number <= 0) {
+    $number = 1;
+}
+
+unless(TGEW::is_installed()) {
+    print STDERR "It seems that TGEW is not installed properly.\n";
+    print STDERR "Make sure that TGEW is properly installed and configured.\n";
+    print STDERR "If it is properly installed, you can just type\n";
+    print STDERR "tge_install to initialize it.\n";
+    exit 1;
+}
+
+my $tgeparam = TGEW::get_parameters();
+
+my $localdir = '/tmp/$USER';
+{
+    my $localdisk_option = ${$tgeparam}{'localdisk'};
+    $localdisk_option =~ s|^\s+||;
+    $localdisk_option =~ s|\s+$||;
+    if($localdisk_option eq '') {
+	print STDERR "Make sure 'localdisk' is properly configured in\n";
+	print STDERR "~/.tge/.tgerc";
+	exit 1;
+    }
+    my $myhostname = $ENV{'HOST'};
+    if($myhostname eq '') {
+	$myhostname = `hostname`; chomp $myhostname;
+    }
+    my @options = split(/\s+/, $localdisk_option);
+    for my $option (@options) {
+	unless($option =~ /^(.*):(.*)$/) {
+	    print STDERR ".tgerc:localdisk: syntax error at '$option'\n";
+	    exit 1;
+	}
+	my $wildcard = $1;
+	my $path     = $2;
+	$wildcard =~ s|\*|.*|g;
+	if($myhostname =~ m|$wildcard|) {
+	    $localdir = $path;
+	    last;
+	}
+    }
+}
+{
+    $localdir =~ s|\$([\w]+)|$ENV{$1}|eg;
+    $localdir =~ s|/$||;
+    unless(-e $localdir) {
+	my $mkdircmd = "/bin/mkdir";
+	if(-x $mkdircmd) {
+	    my $cmdline = "$mkdircmd -p $localdir";
+	    system $cmdline;
+	} else {
+	    # TODO: Perl's mkdir may not support recursive mkdir
+	    mkdir $localdir;
+	}
+    }
+}
+
+my $template = $localdir . '/tempXXXXXXXXX';
+for(my $i = 0; $i < $number; $i++){
+    my (undef, $tempfilename) = tempfile($template, OPEN => 0);
+    print " " if($i);
+    print $tempfilename;
+}
+print "\n";
+
+=pod
+
+=head1 NAME
+
+tge_temp - Create temporary file names
+
+=head1 SYNOPSIS
+
+tge_temp <number>
+
+=head1 OPTIONS
+
+No options are available.
+
+=head1 DESCRIPTION
+
+B<tge_temp> will generate as many temporary file names as specified.
+If the number is not specified or negative, then just one file name is output.
+
+=cut
