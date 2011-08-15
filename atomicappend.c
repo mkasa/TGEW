@@ -51,7 +51,6 @@ void atomic_append(const char *file_name, const char **messages, int message_cou
 			while(*s) *p++ = *s++;
 		}
 		*p++ = '\n';
-		*p++ = '\0';
 		write(fd, buffer, p - buffer);
 		free(buffer);
 	}

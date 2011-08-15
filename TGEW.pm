@@ -13,7 +13,7 @@ sub log_dir() {
 }
 
 sub masterlog_path() {
-    return log_dir() . "/messages";
+    return log_dir() . "/message";
 }
 
 sub execdb_path() {
