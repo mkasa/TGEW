@@ -1,0 +1,40 @@
+#!/usr/bin/env perl
+
+use strict;
+use Term::ReadKey;
+use Data::Dump qw(dump);
+use constant VERSION_STRING => "1.07";
+
+my @lines = `qhost -q -xml`;
+
+my $current_host = undef;
+my $current_queue_name = undef;
+
+my $qname_to_obj = {};
+for(@lines) {
+	chomp;
+	if(m|<host\s+name='(.*?)'|) {
+		$current_host = $1;
+		$current_queue_name = undef;
+	} elsif(m|</host>|) {
+		$current_host = undef;
+	} elsif(m|<queue\s+name='(.*?)'|) {
+		$current_queue_name = $1;
+	} elsif(m|</queue>'|) {
+		$current_queue_name = undef;
+	} elsif(m|<queuevalue\s+qname='(.*?)'\s+name='(.*?)'>(.*?)</queuevalue>|) {
+		my $qname = $1;
+		my $vname = $2;
+		my $val = $3;
+		$qname_to_obj->{$qname}->{$vname} += $val;
+		# print "$current_host\t$qname\t$vname\t$val\n";
+	}
+}
+
+print "QNAME             USED/SLOTS \%AVAIL\n";
+print "-----------------------------------\n";
+for my $qname(sort keys %$qname_to_obj) {
+	my $obj = $qname_to_obj->{$qname};
+	print sprintf("%-16s %5d/%5d %5.1f%%\n", $qname, $obj->{"slots_used"}, $obj->{"slots"}, $obj->{"slots_used"} * 100.0 / $obj->{"slots"});
+}
+
