@@ -91,6 +91,10 @@ sub print_summary($)
 	$logdir   = 'log';
     }
     $mlogpath = "$logdir/message";
+    unless(-e $mlogpath) {
+        print STDERR "This path does not seem to be a TGE job working directory\n";
+        exit 1;
+    }
     my @taillog = `tail -$param_taillines $mlogpath`;
     my $stat = {};
     for(reverse @taillog) {
@@ -241,6 +245,8 @@ sub print_normal($)
 	    # do nothing for the top level tag
 	} elsif(m|^<queue_info>$|) {
 	    # do nothing for queue tag
+	} elsif(m|^<tasks>.*</tasks>$|) {
+	    # do nothing for tasks
 	} elsif(m|^</job_list>$|) {
 	    printJob($cjob);
 	} elsif(m|^</.*>$|) {

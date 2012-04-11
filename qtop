@@ -2,6 +2,7 @@
 
 use strict;
 use Term::ReadKey;
+use constant VERSION_STRING => "1.07";
 my $PAGE_SIZE = 30;
 
 my $username = $ENV{'USER'};
@@ -43,7 +44,7 @@ while(1) {
     my @header;
     {
         my $tmp;
-        my $status = "=== qtop version 1.00 === : [Q]uit, [N]ext, [P]revious, [J]ob, [U]ser    ";
+        my $status = "=== qtop version " . VERSION_STRING . " === : [Q]uit, [N]ext, [P]revious, [J]ob, [U]ser, [S]tat |";
         $status .= $flag_user  ? "U" : " ";
         $status .= $flag_job   ? "J" : " ";
         $status .= $flag_qstat ? "S" : " ";
