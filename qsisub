@@ -1,0 +1,51 @@
+#!/usr/bin/perl
+
+use strict;
+use Getopt::Long;
+use File::Temp qw/tempfile/;
+
+my $stderr_file = undef;
+my $stdout_file = undef;
+my $job_name = undef;
+my $resource_req = undef;
+
+GetOptions(
+	"e=s" => \$stderr_file,
+    "o=s" => \$stdout_file,
+    "N=s" => \$job_name,
+    "l=s" => \$resource_req
+);
+
+my ($fh, $fname) = tempfile();
+
+print $fh "#!/bin/bash\n";
+print $fh "#\n";
+print $fh "#\$ -N $job_name\n" if(defined $job_name);
+print $fh "#\$ -e $stderr_file\n" if(defined $stderr_file);
+print $fh "#\$ -o $stdout_file\n" if(defined $stdout_file);
+print $fh "#\$ -l $resource_req\n" if(defined $resource_req);
+print $fh "\n";
+print $fh "cd " . $ENV{'PWD'} . "\n" if(exists $ENV{'PWD'});
+# NOTE: The following code has a potential problem that we assume no character in environmental variables needs being escaped (e.g., spaces).
+#       We should use some escaping function to avoid this problem, but it looks that it takes more time than we first thought.
+#       Granted that we do not want to use non-standard Perl modules in order to maintain portability, we need to escape
+#       character by ourselves; it will take an additional couple of tens of minutes to implement that, so I left it for future development.
+print $fh "export PATH=" . $ENV{'PATH'} . "\n" if(exists $ENV{'PATH'});
+print $fh "export LD_LIBRARY_PATH=" . $ENV{'LD_LIBRARY_PATH'} . "\n" if(exists $ENV{'LD_LIBRARY_PATH'});
+print $fh "export PYTHONPATH=" . $ENV{'PYTHONPATH'} . "\n" if(exists $ENV{'PYTHONPATH'});
+print $fh "export RUBYPATH=" . $ENV{'RUBYPATH'} . "\n" if(exists $ENV{'RUBYPATH'});
+print $fh "\n";
+
+while(<>) {
+    print $fh $_;
+}
+
+print "\n";
+close $fh;
+my $cmd_line = "qsub $fname";
+print $cmd_line, "\n";
+system $cmd_line;
+if($?) {
+	print STDERR "Error.\n";
+}
+
