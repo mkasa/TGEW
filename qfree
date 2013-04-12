@@ -30,7 +30,7 @@ for(@lines) {
 	}
 }
 
-print "QNAME             USED/SLOTS \%AVAIL\n";
+print "QNAME             USED/SLOTS \%USED\n";
 print "-----------------------------------\n";
 for my $qname(sort keys %$qname_to_obj) {
 	my $obj = $qname_to_obj->{$qname};
