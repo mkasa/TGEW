@@ -2,7 +2,6 @@
 
 use strict;
 use Term::ReadKey;
-use Data::Dump qw(dump);
 use constant VERSION_STRING => "1.07";
 
 my @lines = `qhost -q -xml`;
