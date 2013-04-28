@@ -3,23 +3,36 @@
 use strict;
 use Getopt::Long;
 use File::Temp qw/tempfile/;
+use Getopt::Long;
+use Pod::Usage;
 
+my $debug = 0;
+my $flag_help = 0;
+my $flag_man = 0;
 my $stderr_file = undef;
 my $stdout_file = undef;
 my $job_name = undef;
 my $resource_req = undef;
 
 GetOptions(
-	"e=s" => \$stderr_file,
-    "o=s" => \$stdout_file,
-    "N=s" => \$job_name,
-    "l=s" => \$resource_req
-);
+    "e=s"   => \$stderr_file,
+    "o=s"   => \$stdout_file,
+    "N=s"   => \$job_name,
+    "l=s"   => \$resource_req,
+    "debug" => \$debug,
+    "help"  => \$flag_help,
+    "man"   => \$flag_man
+) or pod2usage(2);
+pod2usage(1) if $flag_help;
+pod2usage(-verbose => 2) if $flag_man;
 
 my ($fh, $fname) = tempfile();
 
-print $fh "#!/bin/bash\n";
+my $shell = "/bin/bash";
+$shell = $ENV{'SHELL'} if(exists $ENV{'SHELL'});
+print $fh "#!$shell\n";
 print $fh "#\n";
+print $fh "#\$ -S $shell\n" if(defined $shell);
 print $fh "#\$ -N $job_name\n" if(defined $job_name);
 print $fh "#\$ -e $stderr_file\n" if(defined $stderr_file);
 print $fh "#\$ -o $stdout_file\n" if(defined $stdout_file);
