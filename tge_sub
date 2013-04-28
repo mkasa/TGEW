@@ -724,10 +724,14 @@ sub submit_commandline($$$$)
 	print $lfh "atomicappend $param_masterlog START\\ \\ : `LANG=C date` on \$HOST\\ \\[$scriptfilename\\]\\ \\ \\ \\ : $log_target\n";
 	print $lfh "# BEGIN COMMANDS\n";
 	if(ref($commandline) eq 'ARRAY') {
+	    print $lfh "LASTCODE=0\n";
 	    for(@{$commandline}) {
 		print STDERR "Substitute-tag for '$_'\n" if($debug);
 		my $cmd = substituteTags($_, \%fileNameToIndexNumber);
-		print $lfh "$cmd\n";
+		print $lfh "if [ \$LASTCODE == 0 ]; then\n";
+		print $lfh "    $cmd\n";
+		print $lfh "    LASTCODE=\$?\n";
+		print $lfh "fi\n";
 	    }
 	} else {
 	    my $cmd = substituteTags($commandline, \%fileNameToIndexNumber);
