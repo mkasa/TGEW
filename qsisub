@@ -28,6 +28,13 @@ GetOptions(
 pod2usage(1) if $flag_help;
 pod2usage(-verbose => 2) if $flag_man;
 
+sub shell_escape
+{
+    my $s = shift;
+    $s =~ s|([ "'\\])|\\$1|g;
+    return $s;
+}
+
 my ($fh, $fname) = tempfile();
 
 my $shell = "/bin/bash";
@@ -45,15 +52,11 @@ for my $dep (@dependencies) {
     print $fh "#\$ -hold_jid $dep\n";
 }
 print $fh "\n";
-print $fh "cd " . $ENV{'PWD'} . "\n" if(exists $ENV{'PWD'});
-# NOTE: The following code has a potential problem that we assume no character in environmental variables needs being escaped (e.g., spaces).
-#       We should use some escaping function to avoid this problem, but it looks that it takes more time than we first thought.
-#       Granted that we do not want to use non-standard Perl modules in order to maintain portability, we need to escape
-#       character by ourselves; it will take an additional couple of tens of minutes to implement that, so I left it for future development.
-print $fh "export PATH=" . $ENV{'PATH'} . "\n" if(exists $ENV{'PATH'});
-print $fh "export LD_LIBRARY_PATH=" . $ENV{'LD_LIBRARY_PATH'} . "\n" if(exists $ENV{'LD_LIBRARY_PATH'});
-print $fh "export PYTHONPATH=" . $ENV{'PYTHONPATH'} . "\n" if(exists $ENV{'PYTHONPATH'});
-print $fh "export RUBYPATH=" . $ENV{'RUBYPATH'} . "\n" if(exists $ENV{'RUBYPATH'});
+print $fh "cd " . shell_escape($ENV{'PWD'}) . "\n" if(exists $ENV{'PWD'});
+print $fh "export PATH=" . shell_escape($ENV{'PATH'}) . "\n" if(exists $ENV{'PATH'});
+print $fh "export LD_LIBRARY_PATH=" . shell_escape($ENV{'LD_LIBRARY_PATH'}) . "\n" if(exists $ENV{'LD_LIBRARY_PATH'});
+print $fh "export PYTHONPATH=" . shell_escape($ENV{'PYTHONPATH'}) . "\n" if(exists $ENV{'PYTHONPATH'});
+print $fh "export RUBYPATH=" . shell_escape($ENV{'RUBYPATH'}) . "\n" if(exists $ENV{'RUBYPATH'});
 print $fh "\n";
 
 while(<>) {
@@ -66,7 +69,8 @@ my $cmd_line = "qsub $fname";
 print $cmd_line, "\n";
 system $cmd_line;
 if($?) {
-    print STDERR "Error.\n";
+    my $exit_code = $? >> 8;
+    print STDERR "Error. (Exit code: $exit_code)\n";
 }
 
 =pod
