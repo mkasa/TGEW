@@ -13,15 +13,17 @@ my $stderr_file = undef;
 my $stdout_file = undef;
 my $job_name = undef;
 my @resource_req = ();
+my @dependencies = ();
 
 GetOptions(
-    "e=s"   => \$stderr_file,
-    "o=s"   => \$stdout_file,
-    "N=s"   => \$job_name,
-    "l=s"   => \@resource_req,
-    "debug" => \$debug,
-    "help"  => \$flag_help,
-    "man"   => \$flag_man
+    "e=s"        => \$stderr_file,
+    "o=s"        => \$stdout_file,
+    "N=s"        => \$job_name,
+    "l=s"        => \@resource_req,
+    "hold_jid=s" => \@dependencies,
+    "debug"      => \$debug,
+    "help"       => \$flag_help,
+    "man"        => \$flag_man
 ) or pod2usage(2);
 pod2usage(1) if $flag_help;
 pod2usage(-verbose => 2) if $flag_man;
@@ -38,6 +40,9 @@ print $fh "#\$ -e $stderr_file\n" if(defined $stderr_file);
 print $fh "#\$ -o $stdout_file\n" if(defined $stdout_file);
 for my $rreq (@resource_req) {
     print $fh "#\$ -l $rreq\n";
+}
+for my $dep (@dependencies) {
+    print $fh "#\$ -hold_jid $dep\n";
 }
 print $fh "\n";
 print $fh "cd " . $ENV{'PWD'} . "\n" if(exists $ENV{'PWD'});
@@ -94,6 +99,12 @@ Specify the job name.
 
 Specify the resource requirement (hard requirement) for Grid Engine.
 You can specify B<-l> option more than once, if needed.
+
+=item<-hold_jid>
+
+Similar to B<-hold_jid> of qsub, it will hold the script until all of the jobs specified in this option finish.
+You can specify B<-hold_jid> more than once, if needed.
+B<-hold_jid_ad> is not available in qsisub.
 
 =back
 
