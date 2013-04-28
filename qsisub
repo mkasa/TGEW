@@ -59,6 +59,44 @@ my $cmd_line = "qsub $fname";
 print $cmd_line, "\n";
 system $cmd_line;
 if($?) {
-	print STDERR "Error.\n";
+    print STDERR "Error.\n";
 }
 
+=pod
+
+=head1 NAME
+
+qsisub - Thin Grid Engine wrapper : submit a job from stdin
+
+=head1 SYNOPSIS
+
+qsisub [options..]
+
+=head1 OPTIONS
+
+=over 8
+
+=item<-o>
+
+Specify the file name for standard output. For example, B<-o /dev/null> redirects the standard output into /dev/null.
+
+=item<-e>
+
+Specify the file name for standard error. For example, B<-e /dev/null> redirects the standard error into /dev/null.
+
+=item<-N>
+
+Specify the job name.
+
+=item<-l>
+
+Specify the resource requirement (hard requirement) for Grid Engine.
+
+=back
+
+=head1 DESCRIPTION
+
+B<qsisub> inputs command lines from standard input, and creates a temporary shell script that
+contains the input command lines (and options for Sun Grid Engine), and then submit it by qsub.
+
+=cut
