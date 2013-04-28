@@ -12,13 +12,13 @@ my $flag_man = 0;
 my $stderr_file = undef;
 my $stdout_file = undef;
 my $job_name = undef;
-my $resource_req = undef;
+my @resource_req = ();
 
 GetOptions(
     "e=s"   => \$stderr_file,
     "o=s"   => \$stdout_file,
     "N=s"   => \$job_name,
-    "l=s"   => \$resource_req,
+    "l=s"   => \@resource_req,
     "debug" => \$debug,
     "help"  => \$flag_help,
     "man"   => \$flag_man
@@ -36,7 +36,9 @@ print $fh "#\$ -S $shell\n" if(defined $shell);
 print $fh "#\$ -N $job_name\n" if(defined $job_name);
 print $fh "#\$ -e $stderr_file\n" if(defined $stderr_file);
 print $fh "#\$ -o $stdout_file\n" if(defined $stdout_file);
-print $fh "#\$ -l $resource_req\n" if(defined $resource_req);
+for my $rreq (@resource_req) {
+    print $fh "#\$ -l $rreq\n";
+}
 print $fh "\n";
 print $fh "cd " . $ENV{'PWD'} . "\n" if(exists $ENV{'PWD'});
 # NOTE: The following code has a potential problem that we assume no character in environmental variables needs being escaped (e.g., spaces).
@@ -91,6 +93,7 @@ Specify the job name.
 =item<-l>
 
 Specify the resource requirement (hard requirement) for Grid Engine.
+You can specify B<-l> option more than once, if needed.
 
 =back
 
