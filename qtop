@@ -2,7 +2,8 @@
 
 use strict;
 use Term::ReadKey;
-use constant VERSION_STRING => "1.07";
+use Getopt::Long;
+use constant VERSION_STRING => "1.08";
 my $PAGE_SIZE = 30;
 
 my $username = $ENV{'USER'};
@@ -18,6 +19,11 @@ my $flag_user           = 0;
 my $flag_job            = 0;
 my $flag_qstat          = 0;
 my $flag_showallcluster = 0;
+GetOptions(
+    "user" =>  \$flag_user,
+    "job"  =>  \$flag_job,
+    "qstat" => \$flag_qstat
+);
 
 my $page = 0;
 
