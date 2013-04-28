@@ -3,7 +3,7 @@
 use strict;
 use Term::ReadKey;
 use Getopt::Long;
-use constant VERSION_STRING => "1.08";
+use constant VERSION_STRING => "1.10";
 my $PAGE_SIZE = 30;
 
 my $username = $ENV{'USER'};

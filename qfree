@@ -2,38 +2,89 @@
 
 use strict;
 use Term::ReadKey;
-use constant VERSION_STRING => "1.07";
+use Getopt::Long;
+use constant VERSION_STRING => "1.10";
 
-my @lines = `qhost -q -xml`;
+my $debug = 0;
+my $param_memory = 4;
+my $param_slots = 1;
+GetOptions(
+	"m=i" => \$param_memory,
+	"s=i" => \$param_slots
+);
+
+my @lines = `qstat -F -xml`;
 
 my $current_host = undef;
 my $current_queue_name = undef;
+my $current_queue_type = undef;
+my $current_queue_state = undef;
+my $current_slots_used;
+my $current_slots_resv;
+my $current_slots_total;
+my $current_mem_req;
 
 my $qname_to_obj = {};
 for(@lines) {
 	chomp;
-	if(m|<host\s+name='(.*?)'|) {
-		$current_host = $1;
-		$current_queue_name = undef;
-	} elsif(m|</host>|) {
+	if(m|<Queue-List>|) {
 		$current_host = undef;
-	} elsif(m|<queue\s+name='(.*?)'|) {
-		$current_queue_name = $1;
-	} elsif(m|</queue>'|) {
 		$current_queue_name = undef;
-	} elsif(m|<queuevalue\s+qname='(.*?)'\s+name='(.*?)'>(.*?)</queuevalue>|) {
-		my $qname = $1;
-		my $vname = $2;
-		my $val = $3;
-		$qname_to_obj->{$qname}->{$vname} += $val;
-		# print "$current_host\t$qname\t$vname\t$val\n";
+		$current_queue_type = undef;
+		$current_queue_state = undef;
+		$current_mem_req = undef;
+		$current_slots_used = 0;
+		$current_slots_resv = 0;
+		$current_slots_total = 0;
+	} elsif(m|<name>(.*?)\@(.*?)</name>|) {
+		$current_host = $2;
+		$current_queue_name = $1;
+	} elsif(m|</Queue-List>|) {
+		$qname_to_obj->{$current_queue_name}->{"type"} = $current_queue_type;
+		if($current_queue_state =~ m|u|i) {
+			$qname_to_obj->{$current_queue_name}->{"slots_error"} += $current_slots_total;
+			$qname_to_obj->{$current_queue_name}->{"okjobs"} += 0;
+		} else {
+			$qname_to_obj->{$current_queue_name}->{"slots_used"} += $current_slots_used;
+			$qname_to_obj->{$current_queue_name}->{"slots_resv"} += $current_slots_resv;
+			$qname_to_obj->{$current_queue_name}->{"slots_total"} += $current_slots_total;
+			my $available_slots = int(($current_slots_total - $current_slots_used - $current_slots_resv) / $param_slots);
+			my $njobs = int($current_mem_req / $param_memory);
+			print "DR: $njobs / $available_slots\n" if($debug);
+			if($njobs > $available_slots) { $njobs = $available_slots; }
+			$qname_to_obj->{$current_queue_name}->{"okjobs"} += $njobs;
+		}
+		$current_host = undef;
+		$current_queue_name = undef;
+		$current_queue_type = undef;
+		$current_queue_state = undef;
+		$current_mem_req = undef;
+		$current_slots_used = 0;
+		$current_slots_resv = 0;
+		$current_slots_total = 0;
+	} elsif(m|<slots_used>(\d+)</slots_used>|) {
+		$current_slots_used = $1;
+	} elsif(m|<slots_resv>(\d+)</slots_resv>|) {
+		$current_slots_resv = $1;
+	} elsif(m|<slots_total>(\d+)</slots_total>|) {
+		$current_slots_total = $1;
+	} elsif(m|<qtype>(.*?)</qtype>|) {
+		$current_queue_type = $1;
+	} elsif(m|<state>(.*?)</state>|) {
+		$current_queue_state = $1;
+	} elsif(m|<resource\s+name="mem_req"\s+type=".*?">([\d\.]+)(\w*)</resource>|) {
+		$current_mem_req = $1;
+		my $sfx = $2;
+		$current_mem_req /= 1000.0 if($sfx =~ m|m|i);
+		$current_mem_req /= 1000000.0 if($sfx =~ m|k|i);
 	}
 }
 
-print "QNAME             USED/SLOTS \%USED\n";
-print "-----------------------------------\n";
+print "QNAME             USED/SLOTS(ERROR) \%USED  #ready\n";
+print "--------------------------------------------------\n";
 for my $qname(sort keys %$qname_to_obj) {
 	my $obj = $qname_to_obj->{$qname};
-	print sprintf("%-16s %5d/%5d %5.1f%%\n", $qname, $obj->{"slots_used"}, $obj->{"slots"}, $obj->{"slots_used"} * 100.0 / $obj->{"slots"});
+	next if($obj->{"type"} eq 'I');
+	print sprintf("%-16s %5d/%5d(%5d) %5.1f%%  %5d\n", $qname, $obj->{"slots_used"}, $obj->{"slots_total"}, $obj->{"slots_error"}, $obj->{"slots_used"} * 100.0 / $obj->{"slots_total"}, $obj->{"okjobs"});
 }
 
