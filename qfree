@@ -3,15 +3,23 @@
 use strict;
 use Term::ReadKey;
 use Getopt::Long;
+use Pod::Usage;
 use constant VERSION_STRING => "1.10";
 
 my $debug = 0;
+my $flag_help = 0;
+my $flag_man = 0;
 my $param_memory = 4;
 my $param_slots = 1;
 GetOptions(
-	"m=i" => \$param_memory,
-	"s=i" => \$param_slots
-);
+	"m=i"   => \$param_memory,
+	"s=i"   => \$param_slots,
+	"debug" => \$debug,
+	"help"  => \$flag_help,
+	"man"   => \$flag_man
+) or pod2usage(2);
+pod2usage(1) if $flag_help;
+pod2usage(-verbose => 2) if $flag_man;
 
 my @lines = `qstat -F -xml`;
 
@@ -88,3 +96,35 @@ for my $qname(sort keys %$qname_to_obj) {
 	print sprintf("%-16s %5d/%5d(%5d) %5.1f%%  %5d\n", $qname, $obj->{"slots_used"}, $obj->{"slots_total"}, $obj->{"slots_error"}, $obj->{"slots_used"} * 100.0 / $obj->{"slots_total"}, $obj->{"okjobs"});
 }
 
+=pod
+
+=head1 NAME
+
+qfree - Thin Grid Engine wrapper : show the free slots of queues
+
+=head1 SYNOPSIS
+
+qfree [-m dd] [-s dd]
+
+=head1 OPTIONS
+
+=over 8
+
+=item<-m dd>
+
+Set the amount of memory for new jobs.
+Please note that this amount is not multiplied by the number of slots given by B<-s> option; although the memory requirement in Grid Engine will be multiplied by the number of used slots.
+
+=item<-s dd>
+
+Set the number of slots for new jobs.
+
+=back
+
+=head1 DESCRIPTION
+
+B<qfree> outputs the number of free slots in batch (non-interactive) queues.
+It also outputs the number of jobs that can be immediately executed for each queue.
+The number of slots and the memory requirement for each job is 1 and 4GB, respectively, by default.
+
+=cut
