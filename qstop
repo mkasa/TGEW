@@ -1,0 +1,160 @@
+#!/usr/bin/env perl
+
+use strict;
+use Term::Screen;
+use Getopt::Long;
+use constant VERSION_STRING => "1.09";
+my $PAGE_SIZE = 30;
+my $param_core = undef;
+my $param_memory = undef;
+GetOptions(
+    "core|c=i" => \$param_core,
+    "mem|m=i"  => \$param_memory
+);
+
+my $username = $ENV{'USER'};
+my $hostname = $ENV{'HOST'};
+if($hostname eq '') {
+    $hostname = `hostname`; chomp $hostname;
+}
+
+my $scr = new Term::Screen;
+my $nrows = $scr->rows();
+my $ncols = $scr->cols();
+
+my $qstatpath = `which qstat`; chomp $qstatpath;
+
+$scr->clrscr();
+$scr->noecho();
+
+while(1) {
+    my $header_and_quota = "qstop " . VERSION_STRING . " " . $username . "\@" . $hostname . " (";
+    my @qquota_result = `qquota | awk '{print\$2;}'`;
+    if($?) {
+	    die "qquota command could not be executed. SGE not available?";
+    }
+    if(2 < @qquota_result) {
+        shift @qquota_result;
+        shift @qquota_result;
+        for(@qquota_result){chomp}
+        $header_and_quota .= join(",", @qquota_result);
+    } else {
+        $header_and_quota .= "unlimited";
+    }
+    $header_and_quota .= ")";
+    if($param_memory || $param_core) {
+	$header_and_quota .= " (";
+	$header_and_quota .= sprintf("%dG mem ", $param_memory) if($param_memory);
+	$header_and_quota .= sprintf("%d cores", $param_core) if($param_core);
+	$header_and_quota .= ")";
+    }
+    
+    $scr->at(0,0)->reverse()->puts(sprintf("%-*.*s", $ncols, $ncols, $header_and_quota))->normal();
+
+    my $next_y = 1;
+    {
+	my $cmd = "qfree";
+	if($param_memory) { $cmd .= " -m $param_memory"; }
+	if($param_core) { $cmd .= " -s $param_core"; }
+	my @qfree_result = `$cmd`;
+	for(my $i = 0; $i < @qfree_result; $i++) {
+	    chomp $qfree_result[$i];
+	    $scr->at($next_y++, 0)->puts(sprintf("%-*.*s", $ncols, $ncols, $qfree_result[$i]));
+	}
+    }
+
+    {
+	my @qstat_result = `$qstatpath -xml -u \\\*`;
+	my $cjob = {}; # currentJob
+	my @job_lines = ();
+	my $count_my_job_running = 0;
+	my $count_others_job_running = 0;
+	my $count_my_qlogin_running = 0;
+	my $count_others_qlogin_running = 0;
+	my $count_my_job_waiting = 0;
+	my $count_others_job_waiting = 0;
+	my $count_my_job_held = 0;
+	my $count_others_job_held = 0;
+	for(@qstat_result) {
+	    chomp;
+	    chop if(/\r$/);
+	    s/^\s+//g;
+	    s/\s+$//g;
+	    if(m|^<job_list state="(.*)">|) {
+		$cjob = {state => $1};
+	    } elsif(m|^<JB_job_number>(\d+)</JB_job_number>$|) {
+		$cjob->{id} = $1;
+	    } elsif(m|^<JB_name>(.*)</JB_name>$|) {
+		$cjob->{name} = $1;
+	    } elsif(m|^<JB_owner>(.*)</JB_owner>$|) {
+		$cjob->{owner} = $1;
+	    } elsif(m|^<JAT_prio>([\d\.]+)</JAT_prio>$|) {
+		# nothing for priority
+	    } elsif(m|^<state>(\w*)</state>$|) {
+		$cjob->{status} = $1;
+	    } elsif(m|^<JB_submission_time>([\d\:\-\w]*)</JB_submission_time>$|) {
+		$cjob->{time} = $1;
+	    } elsif(m|^<JAT_start_time>([\d\:\-\w]*)</JAT_start_time>$|) {
+		$cjob->{time} = $1;
+	    } elsif(m|^<queue_name>(.*)</queue_name>$|) {
+		$cjob->{qname} = $1;
+	    } elsif(m|^<slots>(\d*)</slots>$|) {
+		$cjob->{slots} = $1;
+	    } elsif(m|^<\?xml version='1.0'\?>$|) {
+		# do nothing for XML header
+	    } elsif(m|^<job_info.*>$|) {
+		# do nothing for the top level tag
+	    } elsif(m|^<queue_info>$|) {
+		# do nothing for queue tag
+	    } elsif(m|^<tasks>.*</tasks>$|) {
+		# do nothing for tasks
+	    } elsif(m|^</job_list>$|) {
+		# push to jobs
+		if($cjob->{owner} eq $username) {
+		    if($cjob->{status} =~ /r/) {
+			$count_my_job_running++;
+			if($cjob->{name} eq 'QLOGIN') {
+			    $count_my_qlogin_running++;
+			}
+		    } elsif($cjob->{status} =~ /h/) {
+			$count_my_job_held++;
+		    } elsif($cjob->{status} =~ /w/) {
+			$count_my_job_running++;
+		    }
+		} else {
+		    if($cjob->{status} =~ /r/) {
+			$count_others_job_running++;
+			if($cjob->{name} eq 'QLOGIN') {
+			    $count_others_qlogin_running++;
+			}
+		    } elsif($cjob->{status} =~ /h/) {
+			$count_others_job_held++;
+		    } elsif($cjob->{status} =~ /w/) {
+			$count_others_job_running++;
+		    }
+		}
+	    } elsif(m|^</.*>$|) {
+		# ignores anything that closes
+	    } else {
+		print STDERR "WARNING: could not understand '$_'\n";
+	    }
+	}
+	my $stat_line_str = sprintf("(%d)%d/(%d)%d running, %d/%d waiting, %d/%d held, %d/%d in total", $count_my_qlogin_running, $count_my_job_running, $count_others_qlogin_running, $count_others_job_running, $count_my_job_waiting, $count_others_job_waiting, $count_my_job_held, $count_others_job_held, $count_my_job_waiting + $count_my_job_running + $count_my_job_held, $count_others_job_running + $count_others_job_waiting + $count_others_job_held);
+	$scr->at($next_y++, 0)->reverse()->puts(sprintf("%-*.*s", $ncols, $ncols, $stat_line_str))->normal();
+    }
+
+    my $timeout = 30;
+    my $inch;
+    eval {
+        local $SIG{ALRM} = sub { die "alarm\n" }; # NB: \n required
+        alarm $timeout;
+        $inch = $scr->getch();
+        alarm 0;
+    };
+    unless ($@) {
+	if($inch eq 'q') {
+	    last;
+	}
+    }
+}
+$scr->echo();
