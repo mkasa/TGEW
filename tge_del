@@ -25,21 +25,21 @@ if($regexp eq '') {
     exit 0;
 }
 
-my @jobs_to_delete;
+my %jobs_to_delete;
 my @qstatresult = map { chomp; $_ } `qstat -xml`;
 for(@qstatresult) {
     if(m|<JB_name>([^<]*)</JB_name>|) {
 	my $jobname = $1;
 	if($flag_ignorecase) {
-	    push(@jobs_to_delete, $jobname) if($jobname =~ m|$regexp|i);
+	    $jobs_to_delete{$jobname}=1 if($jobname =~ m|$regexp|i);
 	} else {
-	    push(@jobs_to_delete, $jobname) if($jobname =~ m|$regexp|);
+	    $jobs_to_delete{$jobname}=1 if($jobname =~ m|$regexp|);
 	}
     }
 }
 
-if(@jobs_to_delete) {
-    system("qdel " . join(' ', @jobs_to_delete));
+if(%jobs_to_delete) {
+    system("qdel " . join(' ', keys %jobs_to_delete));
     exit $?;
 } else {
     print STDERR "No jobs to delete\n";
