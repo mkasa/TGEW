@@ -28,6 +28,7 @@ my $qstatpath = `which qstat`; chomp $qstatpath;
 $scr->clrscr();
 $scr->noecho();
 
+my $display_offset = 0;
 LARGELOOP: while(1) {
     my $header_and_quota = "qstop " . VERSION_STRING . " " . $username . "\@" . $hostname . " (";
     my @qquota_result = `qquota | awk '{print\$2;}'`;
@@ -140,8 +141,15 @@ LARGELOOP: while(1) {
         }
     }
 
-    my $display_offset = 0;
     while(1) {
+        my @selected_lines;
+        for(@job_lines) {
+            next if($_->{owner} ne $ENV{'USER'});
+            push(@selected_lines, $_);
+        }
+        $display_offset = 0 if($display_offset < 0);
+        $display_offset = @selected_lines - 1 if(@selected_lines <= $display_offset);
+        my $nrows_for_jobs;
         {
             my $next_y = 0;
             $scr->at($next_y++,0)->reverse()->puts(sprintf("%-*.*s", $ncols, $ncols, $header_and_quota))->normal();
@@ -151,13 +159,17 @@ LARGELOOP: while(1) {
             my $stat_line_str = sprintf("Mine(%d)%d,Others(%d)%d running, %d/%d waiting, %d/%d held, %d/%d in total",
                 $count_my_qlogin_running, $count_my_job_running, $count_others_qlogin_running, $count_others_job_running, $count_my_job_waiting, $count_others_job_waiting, $count_my_job_held, $count_others_job_held, $count_my_job_waiting + $count_my_job_running + $count_my_job_held, $count_others_job_running + $count_others_job_waiting + $count_others_job_held);
             $scr->at($next_y++, 0)->reverse()->puts(sprintf("%-*.*s", $ncols, $ncols, $stat_line_str))->normal();
+            $nrows_for_jobs = $nrows - $next_y;
             while($next_y < $nrows) {
-                for(my $i = $display_offset; $i < @job_lines; $i++) {
-                    my $o = $job_lines[$i];
-                    next if($o->{owner} ne $ENV{'USER'});
+                for(my $i = $display_offset; $i < @selected_lines; $i++) {
+                    my $o = $selected_lines[$i];
                     my $job_line_str = sprintf("%-10.10s %-6.6s %s %-18.18s %d %s", $o->{owner}, $o->{status},
                         $o->{status} =~ /r/ ? $o->{start_time} : $o->{sub_time}, $o->{qname}, $o->{slots}, $o->{name});
-                    $scr->at($next_y++, 0)->puts(sprintf("%-*.*s", $ncols, $ncols, $job_line_str));
+                    if($o->{status} =~ /r/) {
+                        $scr->at($next_y++, 0)->bold()->puts(sprintf("%-*.*s", $ncols, $ncols, $job_line_str))->normal();
+                    } else {
+                        $scr->at($next_y++, 0)->puts(sprintf("%-*.*s", $ncols, $ncols, $job_line_str));
+                    }
                     last unless($next_y < $nrows);
                 }
             }
@@ -176,7 +188,16 @@ LARGELOOP: while(1) {
         unless ($@) {
             if($inch eq 'q') {
                 last LARGELOOP;
+            } elsif($inch eq 'j') {
+                $display_offset++;
+            } elsif($inch eq 'J') {
+                $display_offset += $nrows_for_jobs;
+            } elsif($inch eq 'k') {
+                $display_offset--;
+            } elsif($inch eq 'K') {
+                $display_offset -= $nrows_for_jobs;
             }
+            next;
         }
         last;
     }
