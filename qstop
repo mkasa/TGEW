@@ -28,7 +28,7 @@ my $qstatpath = `which qstat`; chomp $qstatpath;
 $scr->clrscr();
 $scr->noecho();
 
-while(1) {
+LARGELOOP: while(1) {
     my $header_and_quota = "qstop " . VERSION_STRING . " " . $username . "\@" . $hostname . " (";
     my @qquota_result = `qquota | awk '{print\$2;}'`;
     if($?) {
@@ -49,33 +49,30 @@ while(1) {
         $header_and_quota .= sprintf("%d cores", $param_core) if($param_core);
         $header_and_quota .= ")";
     }
-    
-    $scr->at(0,0)->reverse()->puts(sprintf("%-*.*s", $ncols, $ncols, $header_and_quota))->normal();
 
-    my $next_y = 1;
+    my @qfree_result;
     {
         my $cmd = "qfree";
         if($param_memory) { $cmd .= " -m $param_memory"; }
         if($param_core) { $cmd .= " -s $param_core"; }
-        my @qfree_result = `$cmd`;
+        @qfree_result = `$cmd`;
         for(my $i = 0; $i < @qfree_result; $i++) {
             chomp $qfree_result[$i];
-            $scr->at($next_y++, 0)->puts(sprintf("%-*.*s", $ncols, $ncols, $qfree_result[$i]));
         }
     }
 
+    my @job_lines = ();
+    my $count_my_job_running = 0;
+    my $count_others_job_running = 0;
+    my $count_my_qlogin_running = 0;
+    my $count_others_qlogin_running = 0;
+    my $count_my_job_waiting = 0;
+    my $count_others_job_waiting = 0;
+    my $count_my_job_held = 0;
+    my $count_others_job_held = 0;
     {
         my @qstat_result = `$qstatpath -xml -u \\\*`;
         my $cjob = {}; # currentJob
-        my @job_lines = ();
-        my $count_my_job_running = 0;
-        my $count_others_job_running = 0;
-        my $count_my_qlogin_running = 0;
-        my $count_others_qlogin_running = 0;
-        my $count_my_job_waiting = 0;
-        my $count_others_job_waiting = 0;
-        my $count_my_job_held = 0;
-        my $count_others_job_held = 0;
         for(@qstat_result) {
             chomp;
             chop if(/\r$/);
@@ -94,9 +91,9 @@ while(1) {
             } elsif(m|^<state>(\w*)</state>$|) {
                 $cjob->{status} = $1;
             } elsif(m|^<JB_submission_time>([\d\:\-\w]*)</JB_submission_time>$|) {
-                $cjob->{time} = $1;
+                $cjob->{sub_time} = $1;
             } elsif(m|^<JAT_start_time>([\d\:\-\w]*)</JAT_start_time>$|) {
-                $cjob->{time} = $1;
+                $cjob->{start_time} = $1;
             } elsif(m|^<queue_name>(.*)</queue_name>$|) {
                 $cjob->{qname} = $1;
             } elsif(m|^<slots>(\d*)</slots>$|) {
@@ -141,22 +138,47 @@ while(1) {
                 print STDERR "WARNING: could not understand '$_'\n";
             }
         }
-        my $stat_line_str = sprintf("(%d)%d/(%d)%d running, %d/%d waiting, %d/%d held, %d/%d in total", $count_my_qlogin_running, $count_my_job_running, $count_others_qlogin_running, $count_others_job_running, $count_my_job_waiting, $count_others_job_waiting, $count_my_job_held, $count_others_job_held, $count_my_job_waiting + $count_my_job_running + $count_my_job_held, $count_others_job_running + $count_others_job_waiting + $count_others_job_held);
-        $scr->at($next_y++, 0)->reverse()->puts(sprintf("%-*.*s", $ncols, $ncols, $stat_line_str))->normal();
     }
 
-    my $timeout = 30;
-    my $inch;
-    eval {
-        local $SIG{ALRM} = sub { die "alarm\n" }; # NB: \n required
-        alarm $timeout;
-        $inch = $scr->getch();
-        alarm 0;
-    };
-    unless ($@) {
-        if($inch eq 'q') {
-            last;
+    my $display_offset = 0;
+    while(1) {
+        {
+            my $next_y = 0;
+            $scr->at($next_y++,0)->reverse()->puts(sprintf("%-*.*s", $ncols, $ncols, $header_and_quota))->normal();
+            for(my $i = 0; $i < @qfree_result; $i++) {
+                $scr->at($next_y++, 0)->puts(sprintf("%-*.*s", $ncols, $ncols, $qfree_result[$i]));
+            }
+            my $stat_line_str = sprintf("Mine(%d)%d,Others(%d)%d running, %d/%d waiting, %d/%d held, %d/%d in total",
+                $count_my_qlogin_running, $count_my_job_running, $count_others_qlogin_running, $count_others_job_running, $count_my_job_waiting, $count_others_job_waiting, $count_my_job_held, $count_others_job_held, $count_my_job_waiting + $count_my_job_running + $count_my_job_held, $count_others_job_running + $count_others_job_waiting + $count_others_job_held);
+            $scr->at($next_y++, 0)->reverse()->puts(sprintf("%-*.*s", $ncols, $ncols, $stat_line_str))->normal();
+            while($next_y < $nrows) {
+                for(my $i = $display_offset; $i < @job_lines; $i++) {
+                    my $o = $job_lines[$i];
+                    next if($o->{owner} ne $ENV{'USER'});
+                    my $job_line_str = sprintf("%-10.10s %-6.6s %s %-18.18s %d %s", $o->{owner}, $o->{status},
+                        $o->{status} =~ /r/ ? $o->{start_time} : $o->{sub_time}, $o->{qname}, $o->{slots}, $o->{name});
+                    $scr->at($next_y++, 0)->puts(sprintf("%-*.*s", $ncols, $ncols, $job_line_str));
+                    last unless($next_y < $nrows);
+                }
+            }
+            while($next_y < $nrows) {
+                $scr->at($next_y++, 0)->clreol();
+            }
         }
+        my $timeout = 30;
+        my $inch;
+        eval {
+            local $SIG{ALRM} = sub { die "alarm\n" }; # NB: \n required
+            alarm $timeout;
+            $inch = $scr->getch();
+            alarm 0;
+        };
+        unless ($@) {
+            if($inch eq 'q') {
+                last LARGELOOP;
+            }
+        }
+        last;
     }
 }
 $scr->echo();
