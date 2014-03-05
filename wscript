@@ -1,6 +1,6 @@
 # -*- python -*-
 APPNAME = 'TGEW'
-VERSION = '1.09'
+VERSION = '1.10'
 
 def set_options(ctx):
     ctx.tool_options('compiler_cc')
@@ -16,6 +16,6 @@ def build(bld):
         target='atomicappend')
     bld.install_files('${PREFIX}/lib/perl5', ['TGEW.pm'])
     # bld.install_files('${PREFIX}/bin', ['qtop', 'qstop', 'qfree', 'qsisub', 'tge_del', 'tge_stat', 'tge_temp', 'tge_make', 'tge_sub', 'tge_install'], chmod=0755)
-    bld.install_files('${PREFIX}/bin', ['qtop', 'qfree', 'qsisub', 'tge_del', 'tge_stat', 'tge_temp', 'tge_make', 'tge_sub', 'tge_install'], chmod=0755)
+    bld.install_files('${PREFIX}/bin', ['qtop', 'qfree', 'qstop', 'qsisub', 'tge_del', 'tge_stat', 'tge_temp', 'tge_make', 'tge_sub', 'tge_install'], chmod=0755)
 
 
