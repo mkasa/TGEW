@@ -45,7 +45,7 @@ void atomic_append(const char *file_name, const char **messages, int message_cou
 		}
 		p = buffer;
 		for(i = 0; i < message_count; i++) {
-			char *s;
+			const char *s;
 			if(i) *p++ = ' ';
 			s = messages[i];
 			while(*s) *p++ = *s++;
@@ -57,7 +57,7 @@ void atomic_append(const char *file_name, const char **messages, int message_cou
 	close(fd);
 }
 
-int main(int argc, char **argv)
+int main(int argc, const char **argv)
 {
 	if(argc < 3) {
 		fprintf(stderr, "usage: atomicappend <file> <message>\n");
