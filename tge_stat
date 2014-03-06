@@ -239,6 +239,9 @@ sub print_normal($)
 	    $cjob->{qname} = $1;
 	} elsif(m|^<slots>(\d*)</slots>$|) {
 	    $cjob->{slots} = $1;
+        } elsif(m|<jclass_name>(\w*)</jclass_name>|){
+            # ignore or do something?
+            # UGE 8.1.7 returned this entity with blank content
 	} elsif(m|^<\?xml version='1.0'\?>$|) {
 	    # do nothing for XML header
 	} elsif(m|^<job_info.*>$|) {
