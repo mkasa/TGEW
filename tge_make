@@ -14,7 +14,7 @@ require 'TGEW.pm';
 my $param_logdir     = undef;
 my $param_makefile   = undef;
 my $param_dummy      = undef;
-my $param_prefix     = "";
+my $param_prefix     = undef;
 my $flag_man         = 0;
 my $flag_help        = 0;
 my $flag_showmakecmd = 0;
