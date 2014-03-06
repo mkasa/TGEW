@@ -20,6 +20,7 @@ my $param_masterlog  = undef;
 my $param_onfailcmd  = undef;
 my $param_makefile   = undef;
 my $param_dummy      = undef;
+my $param_prefix     = "";
 my $flag_man         = 0;
 my $flag_help        = 0;
 my $flag_make        = 0;
@@ -38,6 +39,7 @@ GetOptions( 'help|?'   => \$flag_help,
 	    'j=i'      => \$param_dummy,
 	    'f=s'      => \$param_makefile,
 	    'n'        => \$flag_showmakecmd,
+	    'prefix=s' => \$param_prefix,
 	    'log=s'    => \$param_logdir,
 	    'mlog=s'   => \$param_masterlog,
             'onfail=s' => \$param_onfailcmd,
@@ -262,7 +264,7 @@ unless($flag_make) {
     # };
     my %jobs; # map<targetname:string, Job>
     {
-	my $jobprefix = "make_" . generate_datestring() . "_";
+	my $jobprefix = $param_prefix . "make_" . generate_datestring() . "_";
 	my @queue = ();
 	my %processed;
 	push(@queue, $topleveltarget);
@@ -852,7 +854,12 @@ Note that this option does not work if GNU make is not properly installed.
 Other make is not likely to work with B<tge_sub> unless command line
 options are completely compatible with GNU's.
 
-=item<-bg -background>
+=item B<-prefix>
+
+When -prefix is specified along with -make, the tge_sub prepend the
+prefix to the standard job name. 
+
+=item B<-bg -background>
 
 When -background option is specified, whole make process is performed
 on background. You can use short option -bg as well.
