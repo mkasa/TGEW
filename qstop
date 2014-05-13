@@ -26,9 +26,11 @@ my $ncols = $scr->cols();
 my $qstatpath = `which qstat`; chomp $qstatpath;
 
 $scr->clrscr();
+$SIG{'INT'} = sub { $scr->echo(); exit 1; } # When CTRL-C is pressed, we must go back to echo mode.
 $scr->noecho();
 
 my $display_offset = 0;
+my %marked_job_ids;
 LARGELOOP: while(1) {
     my $header_and_quota = "qstop " . VERSION_STRING . " " . $username . "\@" . $hostname . " (";
     my @qquota_result = `qquota | awk '{print\$2;}'`;
